@@ -35,6 +35,7 @@
 #include "Targets/RISCV.h"
 #include "Targets/SPIR.h"
 #include "Targets/Sparc.h"
+#include "Targets/MyArch.h"
 #include "Targets/SystemZ.h"
 #include "Targets/TCE.h"
 #include "Targets/VE.h"
@@ -43,6 +44,7 @@
 #include "Targets/XCore.h"
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/TargetParser/Triple.h"
 
 using namespace clang;
@@ -471,6 +473,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new SparcV9TargetInfo(Triple, Opts);
     }
 
+case llvm::Triple::myarch:
+    return new MyArchTargetInfo(Triple, Opts);
   case llvm::Triple::systemz:
     switch (os) {
     case llvm::Triple::Linux:

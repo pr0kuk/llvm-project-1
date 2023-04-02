@@ -1,21 +1,15 @@
-//===-- MyArchTargetInfo.cpp - MyArch Target Implementation -------------------===//
-//
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
-//
-//===----------------------------------------------------------------------===//
-
 #include "MyArch.h"
 #include "llvm/IR/Module.h"
+#include "TargetInfo/MyArchTargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
+
 using namespace llvm;
 
-Target llvm::TheMyArchTarget;
+Target &llvm::getTheMyArchTarget() {
+  static Target TheMyArchTarget;
+  return TheMyArchTarget;
+}
 
-extern "C" void LLVMInitializeMyArchTargetInfo() {
-  RegisterTarget<Triple::myarch,
-                 /*HasJIT=*/false>
-      X(TheMyArchTarget, "MyArch", "MyArch (32-bit simhulator arch)", "MyArch");
+extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMyArchTargetInfo() {
+  RegisterTarget<Triple::myarch, false> X(getTheMyArchTarget(), "MyArch", "MyArch (32-bit MyArchulator arch)", "MyArch");
 }

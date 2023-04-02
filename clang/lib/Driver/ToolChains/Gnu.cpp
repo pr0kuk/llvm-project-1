@@ -30,6 +30,7 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/TargetParser/TargetParser.h"
 #include <system_error>
 
@@ -274,6 +275,8 @@ static const char *getLDMOption(const llvm::Triple &T, const ArgList &Args) {
     return "elf64lppc";
   case llvm::Triple::riscv32:
     return "elf32lriscv";
+case llvm::Triple::myarch:
+    llvm_unreachable("");
   case llvm::Triple::riscv64:
     return "elf64lriscv";
   case llvm::Triple::sparc:

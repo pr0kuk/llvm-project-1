@@ -63,6 +63,8 @@ public:
 
   explicit SelectionDAGISel(char &ID, TargetMachine &tm,
                             CodeGenOpt::Level OL = CodeGenOpt::Default);
+explicit SelectionDAGISel(TargetMachine &tm,
+                            CodeGenOpt::Level OL = CodeGenOpt::Default);
   ~SelectionDAGISel() override;
 
   const TargetLowering *getTargetLowering() const { return TLI; }

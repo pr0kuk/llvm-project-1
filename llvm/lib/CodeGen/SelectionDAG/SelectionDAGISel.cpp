@@ -328,6 +328,21 @@ SelectionDAGISel::SelectionDAGISel(char &ID, TargetMachine &tm,
   initializeTargetLibraryInfoWrapperPassPass(*PassRegistry::getPassRegistry());
 }
 
+/*SelectionDAGISel::SelectionDAGISel(TargetMachine &tm,
+                                   CodeGenOpt::Level OL)
+    : TM(tm), FuncInfo(new FunctionLoweringInfo()),
+      SwiftError(new SwiftErrorValueTracking()),
+      CurDAG(new SelectionDAG(tm, OL)),
+      SDB(std::make_unique<SelectionDAGBuilder>(*CurDAG, *FuncInfo, *SwiftError,
+                                                OL)),
+      OptLevel(OL) {
+  initializeGCModuleInfoPass(*PassRegistry::getPassRegistry());
+  initializeBranchProbabilityInfoWrapperPassPass(
+      *PassRegistry::getPassRegistry());
+  initializeAAResultsWrapperPassPass(*PassRegistry::getPassRegistry());
+  initializeTargetLibraryInfoWrapperPassPass(*PassRegistry::getPassRegistry());
+}*/
+
 SelectionDAGISel::~SelectionDAGISel() {
   delete CurDAG;
   delete SwiftError;
