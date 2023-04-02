@@ -9,9 +9,11 @@
 #include "llvm/Object/ELF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Support/ErrorHandling.h"
+
 
 using namespace llvm;
-using namespace object;
+using namespace llvm::object;
 
 #define STRINGIFY_ENUM_CASE(ns, name)                                          \
   case ns::name:                                                               \
@@ -122,6 +124,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
 #include "llvm/BinaryFormat/ELFRelocs/Sparc.def"
     default:
       break;
+    }
+    break;
+  case ELF::EM_MyArch:
+    switch (Type) {
+      default:
+        llvm_unreachable("");
+        break;
     }
     break;
   case ELF::EM_AMDGPU:
