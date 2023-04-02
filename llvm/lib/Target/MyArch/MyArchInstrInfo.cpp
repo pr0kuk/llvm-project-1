@@ -1,6 +1,6 @@
 #include "MyArchInstrInfo.h"
 #include "MyArch.h"
-//#include "MyArchMachineFunctionInfo.h"
+#include "MyArchMachineFunctionInfo.h"
 #include "MCTargetDesc/MyArchInfo.h"
 #include "MyArchSubtarget.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -240,7 +240,7 @@ void MyArchInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                         MachineBasicBlock::iterator I,
                                         Register SrcReg, bool IsKill, int FI,
                                         const TargetRegisterClass *RC,
-                                        const TargetRegisterInfo *TRI) const {
+                                        const TargetRegisterInfo *TRI, Register VReg) const {
   DebugLoc DL;
   if (I != MBB.end())
     DL = I->getDebugLoc();
@@ -263,7 +263,7 @@ void MyArchInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                          MachineBasicBlock::iterator I,
                                          Register DstReg, int FI,
                                          const TargetRegisterClass *RC,
-                                         const TargetRegisterInfo *TRI) const {
+                                         const TargetRegisterInfo *TRI, Register VReg) const {
   DebugLoc DL;
   if (I != MBB.end())
     DL = I->getDebugLoc();
