@@ -1,8 +1,12 @@
 add_llvm_component_library(LLVMMyArchDesc
   MyArchInstPrinter.cpp
   MyArchMCAsmInfo.cpp
+  MyArchMCCodeEmitter.cpp
   MyArchMCTargetDesc.cpp
-
+  MyArchAsmBackend.cpp
+  MyArchMCExpr.cpp
+  MyArchELFObjectWriter.cpp
+  MyArchTargetStreamer.cpp
   LINK_COMPONENTS
   MC
   MyArchInfo
