@@ -1,12 +1,16 @@
 add_llvm_component_group(MyArch)
 
 set(LLVM_TARGET_DEFINITIONS MyArch.td)
+set(LLVM_TARGET_DEFINITIONS MyArchAsm.td)
+set(LLVM_TARGET_DEFINITIONS MyArchOther.td)
+
 
 # Generate MyArchGenRegisterInfo.inc and MyArchGenInstrInfo.inc which included by
 #  your hand code C++ files.
 # MyArchGenRegisterInfo.inc came from MyArchRegisterInfo.td, MyArchGenInstrInfo.inc
 #  came from MyArchInstrInfo.td.
 tablegen(LLVM MyArchGenRegisterInfo.inc -gen-register-info)
+tablegen(LLVM MyArchGenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM MyArchGenInstrInfo.inc -gen-instr-info)
 tablegen(LLVM MyArchGenCallingConv.inc -gen-callingconv)
 tablegen(LLVM MyArchGenMCPseudoLowering.inc -gen-pseudo-lowering)
@@ -25,6 +29,8 @@ add_llvm_target(MyArchCodeGen
   MyArchAsmPrinter.cpp
   MyArchFrameLowering.cpp
   MyArchInstrInfo.cpp
+  MyArchMachineFunction.cpp
+  MyArchAnalyzeImmediate.cpp
   MyArchISelDagToDag.cpp
   MyArchISelLowering.cpp
   MyArchMachineFunctionInfo.cpp
@@ -52,3 +58,5 @@ add_llvm_target(MyArchCodeGen
 
 add_subdirectory(TargetInfo)
 add_subdirectory(MCTargetDesc)
+add_subdirectory(AsmParser)
+

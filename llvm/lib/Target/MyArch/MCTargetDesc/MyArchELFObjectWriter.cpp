@@ -47,40 +47,40 @@ unsigned MyArchELFObjectWriter::getRelocType(MCContext &Ctx,
                                            const MCFixup &Fixup,
                                            bool IsPCRel) const {
   // determine the type of the relocation
-  //unsigned Type = (unsigned)ELF::R_MyArch_NONE;
+  unsigned Type = (unsigned)ELF::R_MyArch_NONE;
   unsigned Kind = (unsigned)Fixup.getKind();
 
   switch (Kind) {
   default:
     llvm_unreachable("invalid fixup kind!");
-  /*case FK_Data_4:
+  case FK_Data_4:
    Type = ELF::R_MyArch_32;
     break;
   case MyArch::fixup_MyArch_32:
-   // Type = ELF::R_MyArch_32;
+   Type = ELF::R_MyArch_32;
     break;
   case MyArch::fixup_MyArch_GPREL16:
-   // Type = ELF::R_MyArch_GPREL16;
+   Type = ELF::R_MyArch_GPREL16;
     break;
   case MyArch::fixup_MyArch_GOT:
-   // Type = ELF::R_MyArch_GOT16;
+   Type = ELF::R_MyArch_GOT16;
     break;
   case MyArch::fixup_MyArch_HI16:
-   // Type = ELF::R_MyArch_HI16;
+   Type = ELF::R_MyArch_HI16;
     break;
   case MyArch::fixup_MyArch_LO16:
-   // Type = ELF::R_MyArch_LO16;
+   Type = ELF::R_MyArch_LO16;
     break;
   case MyArch::fixup_MyArch_GOT_HI16:
-    //Type = ELF::R_MyArch_GOT_HI16;
+    Type = ELF::R_MyArch_GOT_HI16;
     break;
   case MyArch::fixup_MyArch_GOT_LO16:
-    //Type = ELF::R_MyArch_GOT_LO16;
-    break;*/
+    Type = ELF::R_MyArch_GOT_LO16;
+    break;
   }
 
-  //return Type;
-  return 0;
+  return Type;
+  //return 0;
 }
 //@GetRelocType }
 

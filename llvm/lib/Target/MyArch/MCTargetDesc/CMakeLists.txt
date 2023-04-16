@@ -5,6 +5,7 @@ add_llvm_component_library(LLVMMyArchDesc
   MyArchMCTargetDesc.cpp
   MyArchAsmBackend.cpp
   MyArchMCExpr.cpp
+  MyArchABIInfo.cpp
   MyArchELFObjectWriter.cpp
   MyArchTargetStreamer.cpp
   LINK_COMPONENTS

@@ -1,8 +1,28 @@
+//===-- MyArchInstrInfo.h - MyArch Instruction Information ----------*- C++ -*-===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+//
+// This file contains the MyArch implementation of the TargetInstrInfo class.
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef LLVM_LIB_TARGET_MyArch_MyArchINSTRINFO_H
 #define LLVM_LIB_TARGET_MyArch_MyArchINSTRINFO_H
 
-#include "MCTargetDesc/MyArchInfo.h"
+// #include "MyArchConfig.h"
+#if CH >= CH3_1
+
+#include "MyArch.h"
+#if CH >= CH3_5 //1
+#include "MyArchAnalyzeImmediate.h"
+#endif
 #include "MyArchRegisterInfo.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 
 #define GET_INSTRINFO_HEADER
@@ -10,62 +30,75 @@
 
 namespace llvm {
 
-class MyArchSubtarget;
-
 class MyArchInstrInfo : public MyArchGenInstrInfo {
-  const MyArchSubtarget &STI;
   virtual void anchor();
-
-  const MCInstrDesc &getBrCond(MyArchCC::CondCode CC) const;
-
+protected:
+  const MyArchSubtarget &Subtarget;
 public:
-  MyArchInstrInfo(const MyArchSubtarget &);
+  explicit MyArchInstrInfo(const MyArchSubtarget &STI);
 
-  unsigned isLoadFromStackSlot(const MachineInstr &MI,
-                               int &FrameIndex) const override;
-  unsigned isStoreToStackSlot(const MachineInstr &MI,
-                              int &FrameIndex) const override;
+  static const MyArchInstrInfo *create(MyArchSubtarget &STI);
 
-  unsigned getInstSizeInBytes(const MachineInstr &MI) const override;
+  /// getRegisterInfo - TargetInstrInfo is a superset of MRegister info.  As
+  /// such, whenever a client has an instance of instruction info, it should
+  /// always be able to get register info as well (through this method).
+  ///
+  virtual const MyArchRegisterInfo &getRegisterInfo() const = 0;
 
-  bool analyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
-                     MachineBasicBlock *&FBB,
-                     SmallVectorImpl<MachineOperand> &Cond,
-                     bool AllowModify) const override;
+  /// Return the number of bytes of code the specified instruction may be.
+  unsigned GetInstSizeInBytes(const MachineInstr &MI) const;
 
-  unsigned insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
-                        MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
-                        const DebugLoc &,
-                        int *BytesAdded = nullptr) const override;
+#if CH >= CH8_2 //1
+  virtual unsigned getOppositeBranchOpc(unsigned Opc) const = 0;
+#endif
 
-  unsigned removeBranch(MachineBasicBlock &MBB,
-                        int *BytesRemoved = nullptr) const override;
-
-  MachineBasicBlock *getBranchDestBlock(const MachineInstr &MI) const override;
-
-  void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-                   const DebugLoc &, MCRegister DestReg, MCRegister SrcReg,
-                   bool KillSrc) const override;
-
+#if CH >= CH3_5 //2
   void storeRegToStackSlot(MachineBasicBlock &MBB,
-                           MachineBasicBlock::iterator MI, Register SrcReg,
-                           bool IsKill, int FrameIndex,
+                           MachineBasicBlock::iterator MBBI,
+                           Register SrcReg, bool isKill, int FrameIndex,
                            const TargetRegisterClass *RC,
-                           const TargetRegisterInfo *TRI) const override;
+                           const TargetRegisterInfo *TRI) const override {
+    storeRegToStack(MBB, MBBI, SrcReg, isKill, FrameIndex, RC, TRI, 0);
+  }
 
   void loadRegFromStackSlot(MachineBasicBlock &MBB,
-                            MachineBasicBlock::iterator MI, Register DestReg,
-                            int FrameIndex, const TargetRegisterClass *RC,
-                            const TargetRegisterInfo *TRI) const override;
+                            MachineBasicBlock::iterator MBBI,
+                            Register DestReg, int FrameIndex,
+                            const TargetRegisterClass *RC,
+                            const TargetRegisterInfo *TRI) const override {
+    loadRegFromStack(MBB, MBBI, DestReg, FrameIndex, RC, TRI, 0);
+  }
 
-  bool
-  reverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const override;
+  virtual void storeRegToStack(MachineBasicBlock &MBB,
+                               MachineBasicBlock::iterator MI,
+                               Register SrcReg, bool isKill, int FrameIndex,
+                               const TargetRegisterClass *RC,
+                               const TargetRegisterInfo *TRI,
+                               int64_t Offset) const = 0;
 
-  virtual bool getBaseAndOffsetPosition(const MachineInstr &MI,
-                                        unsigned &BasePos,
-                                        unsigned &OffsetPos) const override;
+  virtual void loadRegFromStack(MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator MI,
+                                Register DestReg, int FrameIndex,
+                                const TargetRegisterClass *RC,
+                                const TargetRegisterInfo *TRI,
+                                int64_t Offset) const = 0;
+#endif
+
+#if CH >= CH3_5 //3
+  virtual void adjustStackPtr(unsigned SP, int64_t Amount,
+                              MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator I) const = 0;
+#endif
+
+protected:
+#if CH >= CH3_5 //4
+  MachineMemOperand *GetMemOperand(MachineBasicBlock &MBB, int FI,
+                                   MachineMemOperand::Flags Flags) const;
+#endif
 };
+const MyArchInstrInfo *createMyArchSEInstrInfo(const MyArchSubtarget &STI);
+}
 
-} // end namespace llvm
+#endif // #if CH >= CH3_1
 
-#endif // LLVM_LIB_TARGET_MyArch_MyArchINSTRINFO_H
+#endif

@@ -1,5 +1,3 @@
-
-
 //===-- MyArchMCCodeEmitter.cpp - Convert MyArch Code to Machine Code ---------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -15,8 +13,7 @@
 //
 
 #include "MyArchMCCodeEmitter.h"
-#if CH >= CH5_1
-
+#include <iostream>
 #include "MCTargetDesc/MyArchBaseInfo.h"
 #include "MCTargetDesc/MyArchFixupKinds.h"
 #include "MCTargetDesc/MyArchMCExpr.h"
@@ -71,20 +68,20 @@ encodeInstruction(const MCInst &MI, raw_ostream &OS,
                   const MCSubtargetInfo &STI) const
 {
   uint32_t Binary = getBinaryCodeForInstr(MI, Fixups, STI);
-
   // Check for unimplemented opcodes.
   // Unfortunately in MyArch both NOT and SLL will come in with Binary == 0
   // so we have to special check for them.
   unsigned Opcode = MI.getOpcode();
-  if ((Opcode != MyArch::SHL) && !Binary)
-    llvm_unreachable("unimplemented opcode in encodeInstruction()");
+  //if ((Opcode != MyArch::NOP) && (Opcode != MyArch::SHL) && !Binary)
+  //  llvm_unreachable("unimplemented opcode in encodeInstruction()");
+  std::cout << "OP=" << Opcode << " Bin=" << std::hex << Binary << std::endl; 
 
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
 
   // Pseudo instructions don't get encoded and shouldn't be here
   // in the first place!
- // if ((TSFlags & MyArch::FormMask) == MyArch::PseudoRET)
+  //if ((TSFlags & MyArchII::FormMask) == MyArchII::Pseudo)
   //  llvm_unreachable("Pseudo opcode found in encodeInstruction()");
 
   // For now all instructions are 4 bytes
@@ -101,17 +98,6 @@ unsigned MyArchMCCodeEmitter::
 getBranch16TargetOpValue(const MCInst &MI, unsigned OpNo,
                          SmallVectorImpl<MCFixup> &Fixups,
                          const MCSubtargetInfo &STI) const {
-#if CH >= CH8_1 //1
-  const MCOperand &MO = MI.getOperand(OpNo);
-
-  // If the destination is an immediate, we have nothing to do.
-  if (MO.isImm()) return MO.getImm();
-  assert(MO.isExpr() && "getBranch16TargetOpValue expects only expressions");
-
-  const MCExpr *Expr = MO.getExpr();
-  Fixups.push_back(MCFixup::create(0, Expr,
-                                   MCFixupKind(MyArch::fixup_MyArch_LO16)));
-#endif
   return 0;
 }
 
@@ -122,17 +108,6 @@ unsigned MyArchMCCodeEmitter::
 getBranch24TargetOpValue(const MCInst &MI, unsigned OpNo,
                        SmallVectorImpl<MCFixup> &Fixups,
                        const MCSubtargetInfo &STI) const {
-#if CH >= CH8_1 //2
-  const MCOperand &MO = MI.getOperand(OpNo);
-
-  // If the destination is an immediate, we have nothing to do.
-  if (MO.isImm()) return MO.getImm();
-  assert(MO.isExpr() && "getBranch24TargetOpValue expects only expressions");
-
-  const MCExpr *Expr = MO.getExpr();
-  Fixups.push_back(MCFixup::create(0, Expr,
-                                   MCFixupKind(MyArch::fixup_MyArch_32)));
-#endif
   return 0;
 }
 
@@ -145,26 +120,6 @@ unsigned MyArchMCCodeEmitter::
 getJumpTargetOpValue(const MCInst &MI, unsigned OpNo,
                      SmallVectorImpl<MCFixup> &Fixups,
                      const MCSubtargetInfo &STI) const {
-#if CH >= CH8_1 //3
-  unsigned Opcode = MI.getOpcode();
-  const MCOperand &MO = MI.getOperand(OpNo);
-  // If the destination is an immediate, we have nothing to do.
-  if (MO.isImm()) return MO.getImm();
-  assert(MO.isExpr() && "getJumpTargetOpValue expects only expressions");
-
-  const MCExpr *Expr = MO.getExpr();
-//#if CH >= CH9_1 //1
-  //if (Opcode == MyArch::JSUB || Opcode == MyArch::JMP || Opcode == MyArch::BAL)
-//#elif CH >= CH8_2 //1
-//  if (Opcode == MyArch::JMP || Opcode == MyArch::BAL)
-//#else
-//  if (Opcode == MyArch::JMP)
-//#endif //#if CH >= CH9_1 //1
- //   Fixups.push_back(MCFixup::create(0, Expr,
- //                                    MCFixupKind(MyArch::fixup_MyArch_32)));
- // else
- //   llvm_unreachable("unexpect opcode in getJumpAbsoluteTargetOpValue()");
-#endif
   return 0;
 }
 //@CH8_1 }
@@ -191,62 +146,10 @@ getExprOpValue(const MCExpr *Expr,SmallVectorImpl<MCFixup> &Fixups,
     MyArch::Fixups FixupKind = MyArch::Fixups(0);
     switch (MyArchExpr->getKind()) {
     default: llvm_unreachable("Unsupported fixup kind for target expression!");
-#if CH >= CH6_1
-  //@switch {
-//    switch(cast<MCSymbolRefExpr>(Expr)->getKind()) {
-  //@switch }
-    case MyArchMCExpr::CEK_GPREL:
-      FixupKind = MyArch::fixup_MyArch_GPREL16;
-      break;
-#if CH >= CH9_1 //2
-    case MyArchMCExpr::CEK_GOT_CALL:
-      //FixupKind = MyArch::fixup_MyArch_CALL16;
-      break;
-#endif
-    case MyArchMCExpr::CEK_GOT:
-      FixupKind = MyArch::fixup_MyArch_GOT;
-      break;
-    case MyArchMCExpr::CEK_ABS_HI:
-      FixupKind = MyArch::fixup_MyArch_HI16;
-      break;
-    case MyArchMCExpr::CEK_ABS_LO:
-      FixupKind = MyArch::fixup_MyArch_LO16;
-      break;
-#if CH >= CH12_1
-    case MyArchMCExpr::CEK_TLSGD:
-      //FixupKind = MyArch::fixup_MyArch_TLSGD;
-      break;
-    case MyArchMCExpr::CEK_TLSLDM:
-      //FixupKind = MyArch::fixup_MyArch_TLSLDM;
-      break;
-    case MyArchMCExpr::CEK_DTP_HI:
-      //FixupKind = MyArch::fixup_MyArch_DTP_HI;
-      break;
-    case MyArchMCExpr::CEK_DTP_LO:
-     // FixupKind = MyArch::fixup_MyArch_DTP_LO;
-      break;
-    case MyArchMCExpr::CEK_GOTTPREL:
-     // FixupKind = MyArch::fixup_MyArch_GOTTPREL;
-      break;
-    case MyArchMCExpr::CEK_TP_HI:
-     // FixupKind = MyArch::fixup_MyArch_TP_HI;
-      break;
-    case MyArchMCExpr::CEK_TP_LO:
-      //FixupKind = MyArch::fixup_MyArch_TP_LO;
-      break;
-#endif
-    case MyArchMCExpr::CEK_GOT_HI16:
-      FixupKind = MyArch::fixup_MyArch_GOT_HI16;
-      break;
-    case MyArchMCExpr::CEK_GOT_LO16:
-      FixupKind = MyArch::fixup_MyArch_GOT_LO16;
-      break;
-#endif // #if CH >= CH6_1
     } // switch
     Fixups.push_back(MCFixup::create(0, Expr, MCFixupKind(FixupKind)));
     return 0;
   }
-
 
   // All of the information is in the fixup.
   return 0;
@@ -288,5 +191,3 @@ MyArchMCCodeEmitter::getMemEncoding(const MCInst &MI, unsigned OpNo,
 }
 
 #include "MyArchGenMCCodeEmitter.inc"
-
-#endif // #if CH >= CH5_1
