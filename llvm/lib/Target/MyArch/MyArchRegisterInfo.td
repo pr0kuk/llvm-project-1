@@ -88,4 +88,4 @@ def SR     : RegisterClass<"MyArch", [i32], 32, (add SW)>;
 
 //@Co-processor 0 Registers class
 def C0Regs : RegisterClass<"MyArch", [i32], 32, (add PC, EPC)>;
-//def GPROut : RegisterClass<"MyArch", [i32], 32, (add (sub CPURegs, SW))>;
+def GPROut : RegisterClass<"MyArch", [i32], 32, (add (sub CPURegs, SW))>;

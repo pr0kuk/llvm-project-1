@@ -419,6 +419,11 @@ enum {
 #include "ELFRelocs/AArch64.def"
 };
 
+
+// ELF Relocation types for MyArch
+enum {
+#include "ELFRelocs/MyArch.def"
+};
 // Special values for the st_other field in the symbol table entry for AArch64.
 enum {
   // Symbol may follow different calling convention than base PCS.

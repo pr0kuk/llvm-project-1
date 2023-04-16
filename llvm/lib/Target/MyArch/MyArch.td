@@ -15,13 +15,13 @@
 //===----------------------------------------------------------------------===//
 
 
-//def FeatureChapter3_1  : SubtargetFeature<"ch3_1", "HasChapterDummy", "true",
-//                                "Enable Chapter instructions.">;
-//def FeatureChapter3_2  : SubtargetFeature<"ch3_2", "HasChapterDummy", "true",
-//                                "Enable Chapter instructions.">;
-//def FeatureChapter3_3  : SubtargetFeature<"ch3_3", "HasChapterDummy", "true",
-//                                "Enable Chapter instructions.">;
-/*def FeatureChapter3_4  : SubtargetFeature<"ch3_4", "HasChapterDummy", "true",
+def FeatureChapter3_1  : SubtargetFeature<"ch3_1", "HasChapterDummy", "true",
+                                "Enable Chapter instructions.">;
+def FeatureChapter3_2  : SubtargetFeature<"ch3_2", "HasChapterDummy", "true",
+                                "Enable Chapter instructions.">;
+def FeatureChapter3_3  : SubtargetFeature<"ch3_3", "HasChapterDummy", "true",
+                                "Enable Chapter instructions.">;
+def FeatureChapter3_4  : SubtargetFeature<"ch3_4", "HasChapterDummy", "true",
                                 "Enable Chapter instructions.">;
 def FeatureChapter3_5  : SubtargetFeature<"ch3_5", "HasChapterDummy", "true",
                                 "Enable Chapter instructions.">;
@@ -67,7 +67,6 @@ def FeatureChapterAll  : SubtargetFeature<"chall", "HasChapterDummy", "true",
                                  FeatureChapter11_1, FeatureChapter11_2, 
                                  FeatureChapter12_1]>;
 
-
 def FeatureCmp         : SubtargetFeature<"cmp", "HasCmp", "true",
                                 "Enable 'cmp' instructions.">;
 def FeatureSlt         : SubtargetFeature<"slt", "HasSlt", "true",
@@ -78,19 +77,21 @@ def FeatureMyArch32I     : SubtargetFeature<"MyArch32I", "MyArchArchVersion",
 def FeatureMyArch32II    : SubtargetFeature<"MyArch32II", "MyArchArchVersion",                      
                                "MyArch32II", "MyArch32II ISA Support (slt)",
                                 [FeatureCmp, FeatureSlt, FeatureChapterAll]>;
-#endif
-*/
+//#endif
+
 //===----------------------------------------------------------------------===//
 // Calling Conv, Instruction Descriptions
 //===----------------------------------------------------------------------===//
 include "llvm/Target/Target.td"
 include "MyArchSchedule.td"
-include "MyArchRegisterInfo.td"
 //include "MyArchOther.td"
-include "MyArchInstrInfo.td"
+//include "MyArchRegisterInfo.td"
+
+// include "MyArchInstrInfo.td"
+
 
 //#if CH >= CH3_1 2
-include "MyArchCallingConv.td"  
+//include "MyArchCallingConv.td"  
 //#endif
 
 def MyArchInstrInfo : InstrInfo;

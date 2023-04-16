@@ -18,7 +18,6 @@ include "llvm/Target/Target.td"
 //===----------------------------------------------------------------------===//
 // Target-dependent interfaces
 //===----------------------------------------------------------------------===//
-
 include "MyArchRegisterInfo.td"
 include "MyArchRegisterInfoGPROutForAsm.td"
-    //include "MyArch.td"
+include "MyArch.td"

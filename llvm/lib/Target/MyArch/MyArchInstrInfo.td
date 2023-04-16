@@ -10,7 +10,7 @@
 // This file contains the MyArch implementation of the TargetInstrInfo class.
 //
 //===----------------------------------------------------------------------===//
-
+//include "MyArchRegisterInfo.td"
 //===----------------------------------------------------------------------===//
 // MyArch profiles and nodes
 //===----------------------------------------------------------------------===//
@@ -24,9 +24,8 @@ def MyArchRet : SDNode<"MyArchISD::Ret", SDTNone,
 //===----------------------------------------------------------------------===//
 // Instruction format superclass
 //===----------------------------------------------------------------------===//
-
+//include "MyArchOther.td"
 include "MyArchInstrFormats.td"
-
 //===----------------------------------------------------------------------===//
 // MyArch Operand, Complex Patterns and Transformations Definitions.
 //===----------------------------------------------------------------------===//

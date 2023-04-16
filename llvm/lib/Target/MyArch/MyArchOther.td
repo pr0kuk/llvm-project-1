@@ -13,12 +13,11 @@
 // Target-independent interfaces
 //===----------------------------------------------------------------------===//
 
-include "llvm/Target/Target.td"
+// include "llvm/Target/Target.td"
 
 //===----------------------------------------------------------------------===//
 // Target-dependent interfaces
 //===----------------------------------------------------------------------===//
-
+include "MyArch.td"
 include "MyArchRegisterInfo.td"
-//include "MyArch.td"
 include "MyArchRegisterInfoGPROutForOther.td" // except AsmParser

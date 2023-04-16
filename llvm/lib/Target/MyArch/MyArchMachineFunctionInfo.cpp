@@ -1,5 +1,5 @@
-#include "MyArchMachineFunctionInfo.h"
+// #include "MyArchMachineFunctionInfo.h"
 
-using namespace llvm;
+// using namespace llvm;
 
-void MyArchFunctionInfo::anchor() {}
+// void MyArchFunctionInfo::anchor() {}
