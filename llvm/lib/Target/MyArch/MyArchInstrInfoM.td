@@ -24,7 +24,7 @@ def myarch_remuw : SDNode<"MyArchISD::REMUW", SDTIntBinOp>;
 //===----------------------------------------------------------------------===//
 
 let Predicates = [HasStdExtM] in {
-def MUL     : ALU_rr<0b0000001, 0b000, "mul">,
+def MUL     : ALU_rr<0b0000001, 0b000, "MUL">,
               Sched<[WriteIMul, ReadIMul, ReadIMul]>;
 def MULH    : ALU_rr<0b0000001, 0b001, "mulh">,
               Sched<[WriteIMul, ReadIMul, ReadIMul]>;

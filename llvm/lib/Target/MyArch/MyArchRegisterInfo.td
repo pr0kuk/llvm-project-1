@@ -77,41 +77,41 @@ def sub_vrm4_1 : SubRegIndex<256, -1>;
 // instruction isn't targeted, we see no major negative codegen impact.
 
 let RegAltNameIndices = [ABIRegAltName] in {
-  def X0  : MyArchReg<0, "x0", ["zero"]>, DwarfRegNum<[0]>;
+  def X0  : MyArchReg<0, "x0", ["r0"]>, DwarfRegNum<[0]>;
   let CostPerUse = 1 in {
-  def X1  : MyArchReg<1, "x1", ["ra"]>, DwarfRegNum<[1]>;
-  def X2  : MyArchReg<2, "x2", ["sp"]>, DwarfRegNum<[2]>;
-  def X3  : MyArchReg<3, "x3", ["gp"]>, DwarfRegNum<[3]>;
-  def X4  : MyArchReg<4, "x4", ["tp"]>, DwarfRegNum<[4]>;
-  def X5  : MyArchReg<5, "x5", ["t0"]>, DwarfRegNum<[5]>;
-  def X6  : MyArchReg<6, "x6", ["t1"]>, DwarfRegNum<[6]>;
-  def X7  : MyArchReg<7, "x7", ["t2"]>, DwarfRegNum<[7]>;
+  def X1  : MyArchReg<1, "x1", ["r1"]>, DwarfRegNum<[1]>;
+  def X2  : MyArchReg<2, "x2", ["r2"]>, DwarfRegNum<[2]>;
+  def X3  : MyArchReg<3, "x3", ["r3"]>, DwarfRegNum<[3]>;
+  def X4  : MyArchReg<4, "x4", ["r4"]>, DwarfRegNum<[4]>;
+  def X5  : MyArchReg<5, "x5", ["r5"]>, DwarfRegNum<[5]>;
+  def X6  : MyArchReg<6, "x6", ["r6"]>, DwarfRegNum<[6]>;
+  def X7  : MyArchReg<7, "x7", ["r7"]>, DwarfRegNum<[7]>;
   }
-  def X8  : MyArchReg<8, "x8", ["s0", "fp"]>, DwarfRegNum<[8]>;
-  def X9  : MyArchReg<9, "x9", ["s1"]>, DwarfRegNum<[9]>;
-  def X10 : MyArchReg<10,"x10", ["a0"]>, DwarfRegNum<[10]>;
-  def X11 : MyArchReg<11,"x11", ["a1"]>, DwarfRegNum<[11]>;
-  def X12 : MyArchReg<12,"x12", ["a2"]>, DwarfRegNum<[12]>;
-  def X13 : MyArchReg<13,"x13", ["a3"]>, DwarfRegNum<[13]>;
-  def X14 : MyArchReg<14,"x14", ["a4"]>, DwarfRegNum<[14]>;
-  def X15 : MyArchReg<15,"x15", ["a5"]>, DwarfRegNum<[15]>;
+  def X8  : MyArchReg<8, "x8", ["r8", "fp"]>, DwarfRegNum<[8]>;
+  def X9  : MyArchReg<9, "x9", ["r9"]>, DwarfRegNum<[9]>;
+  def X10 : MyArchReg<10,"x10", ["r10"]>, DwarfRegNum<[10]>;
+  def X11 : MyArchReg<11,"x11", ["r11"]>, DwarfRegNum<[11]>;
+  def X12 : MyArchReg<12,"x12", ["r12"]>, DwarfRegNum<[12]>;
+  def X13 : MyArchReg<13,"x13", ["r13"]>, DwarfRegNum<[13]>;
+  def X14 : MyArchReg<14,"x14", ["r14"]>, DwarfRegNum<[14]>;
+  def X15 : MyArchReg<15,"x15", ["r15"]>, DwarfRegNum<[15]>;
   let CostPerUse = 1 in {
-  def X16 : MyArchReg<16,"x16", ["a6"]>, DwarfRegNum<[16]>;
-  def X17 : MyArchReg<17,"x17", ["a7"]>, DwarfRegNum<[17]>;
-  def X18 : MyArchReg<18,"x18", ["s2"]>, DwarfRegNum<[18]>;
-  def X19 : MyArchReg<19,"x19", ["s3"]>, DwarfRegNum<[19]>;
-  def X20 : MyArchReg<20,"x20", ["s4"]>, DwarfRegNum<[20]>;
-  def X21 : MyArchReg<21,"x21", ["s5"]>, DwarfRegNum<[21]>;
-  def X22 : MyArchReg<22,"x22", ["s6"]>, DwarfRegNum<[22]>;
-  def X23 : MyArchReg<23,"x23", ["s7"]>, DwarfRegNum<[23]>;
-  def X24 : MyArchReg<24,"x24", ["s8"]>, DwarfRegNum<[24]>;
-  def X25 : MyArchReg<25,"x25", ["s9"]>, DwarfRegNum<[25]>;
-  def X26 : MyArchReg<26,"x26", ["s10"]>, DwarfRegNum<[26]>;
-  def X27 : MyArchReg<27,"x27", ["s11"]>, DwarfRegNum<[27]>;
-  def X28 : MyArchReg<28,"x28", ["t3"]>, DwarfRegNum<[28]>;
-  def X29 : MyArchReg<29,"x29", ["t4"]>, DwarfRegNum<[29]>;
-  def X30 : MyArchReg<30,"x30", ["t5"]>, DwarfRegNum<[30]>;
-  def X31 : MyArchReg<31,"x31", ["t6"]>, DwarfRegNum<[31]>;
+  def X16 : MyArchReg<16,"x16", ["r16"]>, DwarfRegNum<[16]>;
+  def X17 : MyArchReg<17,"x17", ["r17"]>, DwarfRegNum<[17]>;
+  def X18 : MyArchReg<18,"x18", ["r18"]>, DwarfRegNum<[18]>;
+  def X19 : MyArchReg<19,"x19", ["r19"]>, DwarfRegNum<[19]>;
+  def X20 : MyArchReg<20,"x20", ["r20"]>, DwarfRegNum<[20]>;
+  def X21 : MyArchReg<21,"x21", ["r21"]>, DwarfRegNum<[21]>;
+  def X22 : MyArchReg<22,"x22", ["r22"]>, DwarfRegNum<[22]>;
+  def X23 : MyArchReg<23,"x23", ["r23"]>, DwarfRegNum<[23]>;
+  def X24 : MyArchReg<24,"x24", ["r24"]>, DwarfRegNum<[24]>;
+  def X25 : MyArchReg<25,"x25", ["r25"]>, DwarfRegNum<[25]>;
+  def X26 : MyArchReg<26,"x26", ["r26"]>, DwarfRegNum<[26]>;
+  def X27 : MyArchReg<27,"x27", ["r27"]>, DwarfRegNum<[27]>;
+  def X28 : MyArchReg<28,"x28", ["r28"]>, DwarfRegNum<[28]>;
+  def X29 : MyArchReg<29,"x29", ["r29"]>, DwarfRegNum<[29]>;
+  def X30 : MyArchReg<30,"x30", ["r30"]>, DwarfRegNum<[30]>;
+  def X31 : MyArchReg<31,"x31", ["r31"]>, DwarfRegNum<[31]>;
   }
 }
 
