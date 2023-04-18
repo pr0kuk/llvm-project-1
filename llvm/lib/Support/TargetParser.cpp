@@ -324,4 +324,95 @@ bool getCPUFeaturesExceptStdExt(CPUKind Kind,
 }
 
 } // namespace RISCV
+
+
+namespace MyArch {
+
+struct CPUInfo {
+  StringLiteral Name;
+  CPUKind Kind;
+  unsigned Features;
+  StringLiteral DefaultMarch;
+  bool is64Bit() const { return (Features & FK_64BIT); }
+};
+
+constexpr CPUInfo MyArchCPUInfo[] = {
+#define PROC(ENUM, NAME, FEATURES, DEFAULT_MARCH)                              \
+  {NAME, CK_##ENUM, FEATURES, DEFAULT_MARCH},
+#include "llvm/Support/MyArchTargetParser.def"
+};
+
+bool checkCPUKind(CPUKind Kind, bool IsRV64) {
+  if (Kind == CK_INVALID)
+    return false;
+  return MyArchCPUInfo[static_cast<unsigned>(Kind)].is64Bit() == IsRV64;
+}
+
+bool checkTuneCPUKind(CPUKind Kind, bool IsRV64) {
+  if (Kind == CK_INVALID)
+    return false;
+  return MyArchCPUInfo[static_cast<unsigned>(Kind)].is64Bit() == IsRV64;
+}
+
+CPUKind parseCPUKind(StringRef CPU) {
+  return llvm::StringSwitch<CPUKind>(CPU)
+#define PROC(ENUM, NAME, FEATURES, DEFAULT_MARCH) .Case(NAME, CK_##ENUM)
+#include "llvm/Support/MyArchTargetParser.def"
+      .Default(CK_INVALID);
+}
+
+StringRef resolveTuneCPUAlias(StringRef TuneCPU, bool IsRV64) {
+  return llvm::StringSwitch<StringRef>(TuneCPU)
+#define PROC_ALIAS(NAME, RV32, RV64) .Case(NAME, IsRV64 ? StringRef(RV64) : StringRef(RV32))
+#include "llvm/Support/MyArchTargetParser.def"
+      .Default(TuneCPU);
+}
+
+CPUKind parseTuneCPUKind(StringRef TuneCPU, bool IsRV64) {
+  TuneCPU = resolveTuneCPUAlias(TuneCPU, IsRV64);
+
+  return llvm::StringSwitch<CPUKind>(TuneCPU)
+#define PROC(ENUM, NAME, FEATURES, DEFAULT_MARCH) .Case(NAME, CK_##ENUM)
+#include "llvm/Support/MyArchTargetParser.def"
+      .Default(CK_INVALID);
+}
+
+StringRef getMArchFromMcpu(StringRef CPU) {
+  CPUKind Kind = parseCPUKind(CPU);
+  return MyArchCPUInfo[static_cast<unsigned>(Kind)].DefaultMarch;
+}
+
+void fillValidCPUArchList(SmallVectorImpl<StringRef> &Values, bool IsRV64) {
+  for (const auto &C : MyArchCPUInfo) {
+    if (C.Kind != CK_INVALID && IsRV64 == C.is64Bit())
+      Values.emplace_back(C.Name);
+  }
+}
+
+void fillValidTuneCPUArchList(SmallVectorImpl<StringRef> &Values, bool IsRV64) {
+  for (const auto &C : MyArchCPUInfo) {
+    if (C.Kind != CK_INVALID && IsRV64 == C.is64Bit())
+      Values.emplace_back(C.Name);
+  }
+#define PROC_ALIAS(NAME, RV32, RV64) Values.emplace_back(StringRef(NAME));
+#include "llvm/Support/MyArchTargetParser.def"
+}
+
+// Get all features except standard extension feature
+bool getCPUFeaturesExceptStdExt(CPUKind Kind,
+                                std::vector<StringRef> &Features) {
+  unsigned CPUFeatures = MyArchCPUInfo[static_cast<unsigned>(Kind)].Features;
+
+  if (CPUFeatures == FK_INVALID)
+    return false;
+
+  if (CPUFeatures & FK_64BIT)
+    Features.push_back("+64bit");
+  else
+    Features.push_back("-64bit");
+
+  return true;
+}
+
+} // namespace MyArch
 } // namespace llvm

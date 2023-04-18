@@ -154,6 +154,8 @@ add_llvm_component_library(LLVMSupport
   RandomNumberGenerator.cpp
   Regex.cpp
   RISCVAttributes.cpp
+  MyArchAttributes.cpp
+  MyArchAttributeParser.cpp
   RISCVAttributeParser.cpp
   ScaledNumber.cpp
   ScopedPrinter.cpp
