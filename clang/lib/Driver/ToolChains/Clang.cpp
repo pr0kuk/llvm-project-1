@@ -13,6 +13,7 @@
 #include "Arch/Mips.h"
 #include "Arch/PPC.h"
 #include "Arch/RISCV.h"
+#include "Arch/MyArch.h"
 #include "Arch/Sparc.h"
 #include "Arch/SystemZ.h"
 #include "Arch/VE.h"
@@ -337,6 +338,9 @@ static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   case llvm::Triple::riscv64:
     riscv::getRISCVTargetFeatures(D, Triple, Args, Features);
     break;
+  case llvm::Triple::myarch:
+    riscv::getRISCVTargetFeatures(D, Triple, Args, Features);
+    break;
   case llvm::Triple::systemz:
     systemz::getSystemZTargetFeatures(D, Args, Features);
     break;
@@ -530,6 +534,7 @@ static bool useFramePointerForTargetByDefault(const ArgList &Args,
   case llvm::Triple::ppc64le:
   case llvm::Triple::riscv32:
   case llvm::Triple::riscv64:
+  case llvm::Triple::myarch:
   case llvm::Triple::amdgcn:
   case llvm::Triple::r600:
     return !areOptimizationsEnabled(Args);
@@ -1406,6 +1411,7 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
   case llvm::Triple::ppc64le:
   case llvm::Triple::riscv32:
   case llvm::Triple::riscv64:
+  case llvm::Triple::myarch:
   case llvm::Triple::systemz:
   case llvm::Triple::xcore:
     return false;
@@ -1627,6 +1633,7 @@ void Clang::RenderTargetOptions(const llvm::Triple &EffectiveTriple,
 
   case llvm::Triple::riscv32:
   case llvm::Triple::riscv64:
+  case llvm::Triple::myarch:
     AddRISCVTargetArgs(Args, CmdArgs);
     break;
 
@@ -1972,6 +1979,61 @@ void Clang::AddPPCTargetArgs(const ArgList &Args,
     CmdArgs.push_back(ABIName);
   }
 }
+
+// static void SetMyArchSmallDataLimit(const ToolChain &TC, const ArgList &Args,
+//                                    ArgStringList &CmdArgs) {
+//   const Driver &D = TC.getDriver();
+//   const llvm::Triple &Triple = TC.getTriple();
+//   // Default small data limitation is eight.
+//   const char *SmallDataLimit = "8";
+//   // Get small data limitation.
+//   if (Args.getLastArg(options::OPT_shared, options::OPT_fpic,
+//                       options::OPT_fPIC)) {
+//     // Not support linker relaxation for PIC.
+//     SmallDataLimit = "0";
+//     if (Args.hasArg(options::OPT_G)) {
+//       D.Diag(diag::warn_drv_unsupported_sdata);
+//     }
+//   } else if (Args.getLastArgValue(options::OPT_mcmodel_EQ)
+//                  .equals_lower("large") &&
+//              (Triple.getArch() == llvm::Triple::myarch)) {
+//     // Not support linker relaxation for RV64 with large code model.
+//     SmallDataLimit = "0";
+//     if (Args.hasArg(options::OPT_G)) {
+//       D.Diag(diag::warn_drv_unsupported_sdata);
+//     }
+//   } else if (Arg *A = Args.getLastArg(options::OPT_G)) {
+//     SmallDataLimit = A->getValue();
+//   }
+//   // Forward the -msmall-data-limit= option.
+//   CmdArgs.push_back("-msmall-data-limit");
+//   CmdArgs.push_back(SmallDataLimit);
+// }
+
+// void Clang::AddMyArchTargetArgs(const ArgList &Args,
+//                                ArgStringList &CmdArgs) const {
+//   const llvm::Triple &Triple = getToolChain().getTriple();
+//   StringRef ABIName = myarch::getMyArchABI(Args, Triple);
+
+//   CmdArgs.push_back("-target-abi");
+//   CmdArgs.push_back(ABIName.data());
+
+//   SetMyArchSmallDataLimit(getToolChain(), Args, CmdArgs);
+
+//   std::string TuneCPU;
+
+//   if (const Arg *A = Args.getLastArg(clang::driver::options::OPT_mtune_EQ)) {
+//     StringRef Name = A->getValue();
+
+//     Name = llvm::MyArch::resolveTuneCPUAlias(Name, Triple.isArch64Bit());
+//     TuneCPU = std::string(Name);
+//   }
+
+//   if (!TuneCPU.empty()) {
+//     CmdArgs.push_back("-tune-cpu");
+//     CmdArgs.push_back(Args.MakeArgString(TuneCPU));
+//   }
+// }
 
 static void SetRISCVSmallDataLimit(const ToolChain &TC, const ArgList &Args,
                                    ArgStringList &CmdArgs) {
@@ -7083,6 +7145,15 @@ void ClangAs::AddRISCVTargetArgs(const ArgList &Args,
   CmdArgs.push_back(ABIName.data());
 }
 
+// void ClangAs::AddMyArchTargetArgs(const ArgList &Args,
+//                                ArgStringList &CmdArgs) const {
+//   const llvm::Triple &Triple = getToolChain().getTriple();
+//   StringRef ABIName = myarch::getMyArchABI(Args, Triple);
+
+//   CmdArgs.push_back("-target-abi");
+//   CmdArgs.push_back(ABIName.data());
+// }
+
 void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
                            const InputInfo &Output, const InputInfoList &Inputs,
                            const ArgList &Args,
@@ -7269,8 +7340,12 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 
   case llvm::Triple::riscv32:
   case llvm::Triple::riscv64:
+  case llvm::Triple::myarch:
     AddRISCVTargetArgs(Args, CmdArgs);
     break;
+  // case llvm::Triple::myarch:
+  //   AddMyArchTargetArgs(Args, CmdArgs);
+  //   break;
   }
 
   // Consume all the warning flags. Usually this would be handled more

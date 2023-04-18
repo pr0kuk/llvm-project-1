@@ -41,6 +41,7 @@
 #include "ToolChains/PPCLinux.h"
 #include "ToolChains/PS4CPU.h"
 #include "ToolChains/RISCVToolchain.h"
+// #include "ToolChains/MyArchToolchain.h"
 #include "ToolChains/Solaris.h"
 #include "ToolChains/TCE.h"
 #include "ToolChains/VEToolchain.h"
@@ -586,6 +587,11 @@ static llvm::Triple computeTargetTriple(const Driver &D,
       Target.setArch(llvm::Triple::riscv32);
     else if (ArchName.startswith_lower("rv64"))
       Target.setArch(llvm::Triple::riscv64);
+  }
+    A = Args.getLastArg(options::OPT_march_EQ);
+  if (A && Target.isRISCV()) {
+    StringRef ArchName = A->getValue();
+    Target.setArch(llvm::Triple::myarch);
   }
 
   return Target;
@@ -5210,6 +5216,10 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         TC =
             std::make_unique<toolchains::MSP430ToolChain>(*this, Target, Args);
         break;
+      // case llvm::Triple::myarch:
+      //   if (toolchains::MyArchToolChain::hasGCCToolchain(*this, Args))
+      //     TC = std::make_unique<toolchains::MyArchToolChain>(*this, Target, Args);
+      //   break;
       case llvm::Triple::riscv32:
       case llvm::Triple::riscv64:
         if (toolchains::RISCVToolChain::hasGCCToolchain(*this, Args))
