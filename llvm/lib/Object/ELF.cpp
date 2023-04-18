@@ -110,6 +110,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
       break;
     }
     break;
+case ELF::EM_MyArch:
+    switch (Type) {
+#include "llvm/BinaryFormat/ELFRelocs/MyArch.def"
+    default:
+      break;
+    }
+    break;
   case ELF::EM_S390:
     switch (Type) {
 #include "llvm/BinaryFormat/ELFRelocs/SystemZ.def"
@@ -126,13 +133,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
       break;
     }
     break;
-  case ELF::EM_MyArch:
-    switch (Type) {
-      default:
-        llvm_unreachable("");
-        break;
-    }
-    break;
+  // case ELF::EM_MyArch:
+  //   switch (Type) {
+  //     default:
+  //       llvm_unreachable("");
+  //       break;
+  //   }
+  //   break;
   case ELF::EM_AMDGPU:
     switch (Type) {
 #include "llvm/BinaryFormat/ELFRelocs/AMDGPU.def"

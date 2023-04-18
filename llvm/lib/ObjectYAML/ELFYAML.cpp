@@ -673,6 +673,9 @@ void ScalarEnumerationTraits<ELFYAML::ELF_REL>::enumeration(
   case ELF::EM_RISCV:
 #include "llvm/BinaryFormat/ELFRelocs/RISCV.def"
     break;
+    case ELF::EM_MyArch:
+#include "llvm/BinaryFormat/ELFRelocs/MyArch.def"
+    break;
   case ELF::EM_LANAI:
 #include "llvm/BinaryFormat/ELFRelocs/Lanai.def"
     break;
