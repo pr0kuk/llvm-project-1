@@ -645,9 +645,25 @@ enum : unsigned {
   EF_RISCV_RVE = 0x0008
 };
 
+
+// RISCV Specific e_flags
+enum : unsigned {
+  EF_MyArch_RVC = 0x0001,
+  EF_MyArch_FLOAT_ABI = 0x0006,
+  EF_MyArch_FLOAT_ABI_SOFT = 0x0000,
+  EF_MyArch_FLOAT_ABI_SINGLE = 0x0002,
+  EF_MyArch_FLOAT_ABI_DOUBLE = 0x0004,
+  EF_MyArch_FLOAT_ABI_QUAD = 0x0006,
+  EF_MyArch_RVE = 0x0008
+};
+
 // ELF Relocation types for RISC-V
 enum {
 #include "ELFRelocs/RISCV.def"
+};
+
+enum {
+#include "ELFRelocs/MyArch.def"
 };
 
 // ELF Relocation types for S390/zSeries
@@ -908,6 +924,8 @@ enum : unsigned {
   SHT_MSP430_ATTRIBUTES = 0x70000003U,
 
   SHT_RISCV_ATTRIBUTES = 0x70000003U,
+  SHT_MyArch_ATTRIBUTES = 0x70000003U,
+
 
   SHT_HIPROC = 0x7fffffff, // Highest processor arch-specific type.
   SHT_LOUSER = 0x80000000, // Lowest type reserved for applications.
