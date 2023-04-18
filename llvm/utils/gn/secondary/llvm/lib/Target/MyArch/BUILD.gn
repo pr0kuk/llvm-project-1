@@ -1,0 +1,100 @@
+import("//llvm/utils/TableGen/tablegen.gni")
+
+# MyArch is the only target that has a "compress instr emitter", and it's
+# a bit strange in that it defines static functions depending on which
+# defines are set. Instead of housing these functions in one library,
+# various libraries include the generated .inc file with different defines set.
+tablegen("MyArchGenCompressInstEmitter") {
+  visibility = [
+    ":LLVMMyArchCodeGen",
+    "AsmParser",
+    "MCTargetDesc",
+  ]
+  args = [ "-gen-compress-inst-emitter" ]
+  td_file = "MyArch.td"
+}
+
+tablegen("MyArchGenDAGISel") {
+  visibility = [ ":LLVMMyArchCodeGen" ]
+  args = [ "-gen-dag-isel" ]
+  td_file = "MyArch.td"
+}
+
+tablegen("MyArchGenGlobalISel") {
+  visibility = [ ":LLVMMyArchCodeGen" ]
+  args = [ "-gen-global-isel" ]
+  td_file = "MyArch.td"
+}
+
+tablegen("MyArchGenMCPseudoLowering") {
+  visibility = [ ":LLVMMyArchCodeGen" ]
+  args = [ "-gen-pseudo-lowering" ]
+  td_file = "MyArch.td"
+}
+
+tablegen("MyArchGenRegisterBank") {
+  visibility = [ ":LLVMMyArchCodeGen" ]
+  args = [ "-gen-register-bank" ]
+  td_file = "MyArch.td"
+}
+
+static_library("LLVMMyArchCodeGen") {
+  deps = [
+    ":MyArchGenCompressInstEmitter",
+    ":MyArchGenDAGISel",
+    ":MyArchGenGlobalISel",
+    ":MyArchGenMCPseudoLowering",
+    ":MyArchGenRegisterBank",
+
+    # See https://reviews.llvm.org/D69130
+    "AsmParser:MyArchGenAsmMatcher",
+    "MCTargetDesc",
+    "TargetInfo",
+    "//llvm/include/llvm/Config:llvm-config",
+    "//llvm/lib/CodeGen",
+    "//llvm/lib/CodeGen/AsmPrinter",
+    "//llvm/lib/CodeGen/SelectionDAG",
+    "//llvm/lib/IR",
+    "//llvm/lib/MC",
+    "//llvm/lib/Support",
+    "//llvm/lib/Target",
+  ]
+  include_dirs = [ "." ]
+  sources = [
+    "MyArchAsmPrinter.cpp",
+    "MyArchCallLowering.cpp",
+    "MyArchCleanupVSETVLI.cpp",
+    "MyArchExpandAtomicPseudoInsts.cpp",
+    "MyArchExpandPseudoInsts.cpp",
+    "MyArchFrameLowering.cpp",
+    "MyArchISelDAGToDAG.cpp",
+    "MyArchISelLowering.cpp",
+    "MyArchInstrInfo.cpp",
+    "MyArchInstructionSelector.cpp",
+    "MyArchLegalizerInfo.cpp",
+    "MyArchMCInstLower.cpp",
+    "MyArchMergeBaseOffset.cpp",
+    "MyArchRegisterBankInfo.cpp",
+    "MyArchRegisterInfo.cpp",
+    "MyArchSubtarget.cpp",
+    "MyArchTargetMachine.cpp",
+    "MyArchTargetObjectFile.cpp",
+    "MyArchTargetTransformInfo.cpp",
+  ]
+}
+
+# This is a bit different from most build files: Due to this group
+# having the directory's name, "//llvm/lib/Target/MyArch" will refer to this
+# target, which pulls in the code in this directory *and all subdirectories*.
+# For most other directories, "//llvm/lib/Foo" only pulls in the code directly
+# in "llvm/lib/Foo". The forwarding targets in //llvm/lib/Target expect this
+# different behavior.
+group("MyArch") {
+  deps = [
+    ":LLVMMyArchCodeGen",
+    "AsmParser",
+    "Disassembler",
+    "MCTargetDesc",
+    "TargetInfo",
+  ]
+}

@@ -1,0 +1,24 @@
+import("//llvm/utils/TableGen/tablegen.gni")
+
+tablegen("MyArchGenAsmMatcher") {
+  visibility = [
+    ":AsmParser",
+    "//llvm/lib/Target/MyArch:LLVMMyArchCodeGen",
+  ]
+  args = [ "-gen-asm-matcher" ]
+  td_file = "../MyArch.td"
+}
+
+static_library("AsmParser") {
+  output_name = "LLVMMyArchAsmParser"
+  deps = [
+    ":MyArchGenAsmMatcher",
+    "//llvm/lib/MC",
+    "//llvm/lib/MC/MCParser",
+    "//llvm/lib/Support",
+    "//llvm/lib/Target/MyArch:MyArchGenCompressInstEmitter",
+    "//llvm/lib/Target/MyArch/MCTargetDesc",
+  ]
+  include_dirs = [ ".." ]
+  sources = [ "MyArchAsmParser.cpp" ]
+}

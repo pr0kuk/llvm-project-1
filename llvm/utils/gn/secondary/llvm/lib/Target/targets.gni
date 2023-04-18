@@ -18,6 +18,7 @@ llvm_all_targets = [
   "NVPTX",
   "PowerPC",
   "RISCV",
+  "MyArch",
   "Sparc",
   "SystemZ",
   "WebAssembly",

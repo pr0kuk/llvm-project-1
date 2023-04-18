@@ -1,0 +1,19 @@
+import("//llvm/utils/TableGen/tablegen.gni")
+
+tablegen("MyArchGenDisassemblerTables") {
+  visibility = [ ":Disassembler" ]
+  args = [ "-gen-disassembler" ]
+  td_file = "../MyArch.td"
+}
+
+static_library("Disassembler") {
+  output_name = "LLVMMyArchDisassembler"
+  deps = [
+    ":MyArchGenDisassemblerTables",
+    "//llvm/lib/MC/MCDisassembler",
+    "//llvm/lib/Support",
+    "//llvm/lib/Target/MyArch/MCTargetDesc",
+  ]
+  include_dirs = [ ".." ]
+  sources = [ "MyArchDisassembler.cpp" ]
+}

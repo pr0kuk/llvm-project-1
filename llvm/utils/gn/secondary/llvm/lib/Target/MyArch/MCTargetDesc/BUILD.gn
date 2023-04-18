@@ -1,0 +1,78 @@
+import("//llvm/utils/TableGen/tablegen.gni")
+
+tablegen("MyArchGenAsmWriter") {
+  visibility = [ ":MCTargetDesc" ]
+  args = [ "-gen-asm-writer" ]
+  td_file = "../MyArch.td"
+}
+
+tablegen("MyArchGenInstrInfo") {
+  visibility = [ ":tablegen" ]
+  args = [ "-gen-instr-info" ]
+  td_file = "../MyArch.td"
+}
+
+tablegen("MyArchGenMCCodeEmitter") {
+  visibility = [ ":MCTargetDesc" ]
+  args = [ "-gen-emitter" ]
+  td_file = "../MyArch.td"
+}
+
+tablegen("MyArchGenRegisterInfo") {
+  visibility = [ ":tablegen" ]
+  args = [ "-gen-register-info" ]
+  td_file = "../MyArch.td"
+}
+
+tablegen("MyArchGenSearchableTables") {
+  visibility = [ ":tablegen" ]
+  args = [ "-gen-searchable-tables" ]
+  td_file = "../MyArch.td"
+}
+
+tablegen("MyArchGenSubtargetInfo") {
+  visibility = [ ":tablegen" ]
+  args = [ "-gen-subtarget" ]
+  td_file = "../MyArch.td"
+}
+
+# This should contain tablegen targets generating .inc files included
+# by other targets. .inc files only used by .cpp files in this directory
+# should be in deps on the static_library instead.
+group("tablegen") {
+  visibility = [
+    ":MCTargetDesc",
+  ]
+  public_deps = [
+    ":MyArchGenInstrInfo",
+    ":MyArchGenRegisterInfo",
+    ":MyArchGenSearchableTables",
+    ":MyArchGenSubtargetInfo",
+  ]
+}
+
+static_library("MCTargetDesc") {
+  output_name = "LLVMMyArchDesc"
+  public_deps = [ ":tablegen" ]
+  deps = [
+    ":MyArchGenAsmWriter",
+    ":MyArchGenMCCodeEmitter",
+    "//llvm/lib/MC",
+    "//llvm/lib/Support",
+    "//llvm/lib/Target/MyArch:MyArchGenCompressInstEmitter",
+  ]
+  include_dirs = [ ".." ]
+  sources = [
+    "MyArchAsmBackend.cpp",
+    "MyArchBaseInfo.cpp",
+    "MyArchELFObjectWriter.cpp",
+    "MyArchELFStreamer.cpp",
+    "MyArchInstPrinter.cpp",
+    "MyArchMCAsmInfo.cpp",
+    "MyArchMCCodeEmitter.cpp",
+    "MyArchMCExpr.cpp",
+    "MyArchMCTargetDesc.cpp",
+    "MyArchMatInt.cpp",
+    "MyArchTargetStreamer.cpp",
+  ]
+}
