@@ -1,127 +1,153 @@
-//===-- MyArchELFObjectWriter.cpp - MyArch ELF Writer -------------------------===//
+//===-- MyArchELFObjectWriter.cpp - MyArch ELF Writer -----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-//#include "MyArchConfig.h"
-
-#include "MCTargetDesc/MyArchBaseInfo.h"
 #include "MCTargetDesc/MyArchFixupKinds.h"
+#include "MCTargetDesc/MyArchMCExpr.h"
 #include "MCTargetDesc/MyArchMCTargetDesc.h"
-#include "llvm/MC/MCAssembler.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCELFObjectWriter.h"
-#include "llvm/MC/MCExpr.h"
-#include "llvm/MC/MCSection.h"
-#include "llvm/MC/MCValue.h"
+#include "llvm/MC/MCFixup.h"
+#include "llvm/MC/MCObjectWriter.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <list>
 
 using namespace llvm;
 
 namespace {
-  class MyArchELFObjectWriter : public MCELFObjectTargetWriter {
-  public:
-    MyArchELFObjectWriter(uint8_t OSABI, bool HasRelocationAddend, bool Is64);
+class MyArchELFObjectWriter : public MCELFObjectTargetWriter {
+public:
+  MyArchELFObjectWriter(uint8_t OSABI, bool Is64Bit);
 
-	~MyArchELFObjectWriter() = default;
+  ~MyArchELFObjectWriter() override;
 
-    unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
+  // Return true if the given relocation must be with a symbol rather than
+  // section plus offset.
+  bool needsRelocateWithSymbol(const MCSymbol &Sym,
+                               unsigned Type) const override {
+    // TODO: this is very conservative, update once RISC-V psABI requirements
+    //       are clarified.
+    return true;
+  }
+
+protected:
+  unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
                         const MCFixup &Fixup, bool IsPCRel) const override;
-    bool needsRelocateWithSymbol(const MCSymbol &Sym,
-                                 unsigned Type) const override;
-  };
+};
 }
 
-MyArchELFObjectWriter::MyArchELFObjectWriter(uint8_t OSABI,
-                                         bool HasRelocationAddend, bool Is64)
-    : MCELFObjectTargetWriter(/*Is64Bit_=false*/ Is64, OSABI, ELF::EM_MyArch,
-          /*HasRelocationAddend_ = false*/ HasRelocationAddend) {}
+MyArchELFObjectWriter::MyArchELFObjectWriter(uint8_t OSABI, bool Is64Bit)
+    : MCELFObjectTargetWriter(Is64Bit, OSABI, ELF::EM_MyArch,
+                              /*HasRelocationAddend*/ true) {}
 
-//@GetRelocType {
+MyArchELFObjectWriter::~MyArchELFObjectWriter() {}
+
 unsigned MyArchELFObjectWriter::getRelocType(MCContext &Ctx,
-                                           const MCValue &Target,
-                                           const MCFixup &Fixup,
-                                           bool IsPCRel) const {
-  // determine the type of the relocation
-  //unsigned Type = (unsigned)ELF::R_MyArch_NONE;
-  unsigned Kind = (unsigned)Fixup.getKind();
+                                            const MCValue &Target,
+                                            const MCFixup &Fixup,
+                                            bool IsPCRel) const {
+  const MCExpr *Expr = Fixup.getValue();
+  // Determine the type of the relocation
+  unsigned Kind = Fixup.getTargetKind();
+  if (Kind >= FirstLiteralRelocationKind)
+    return Kind - FirstLiteralRelocationKind;
+  if (IsPCRel) {
+    switch (Kind) {
+    default:
+      Ctx.reportError(Fixup.getLoc(), "Unsupported relocation type");
+      return ELF::R_MyArch_NONE;
+    case FK_Data_4:
+    case FK_PCRel_4:
+      return ELF::R_MyArch_32_PCREL;
+    case MyArch::fixup_myarch_pcrel_hi20:
+      return ELF::R_MyArch_PCREL_HI20;
+    case MyArch::fixup_myarch_pcrel_lo12_i:
+      return ELF::R_MyArch_PCREL_LO12_I;
+    case MyArch::fixup_myarch_pcrel_lo12_s:
+      return ELF::R_MyArch_PCREL_LO12_S;
+    case MyArch::fixup_myarch_got_hi20:
+      return ELF::R_MyArch_GOT_HI20;
+    case MyArch::fixup_myarch_tls_got_hi20:
+      return ELF::R_MyArch_TLS_GOT_HI20;
+    case MyArch::fixup_myarch_tls_gd_hi20:
+      return ELF::R_MyArch_TLS_GD_HI20;
+    case MyArch::fixup_myarch_jal:
+      return ELF::R_MyArch_JAL;
+    case MyArch::fixup_myarch_branch:
+      return ELF::R_MyArch_BRANCH;
+    case MyArch::fixup_myarch_rvc_jump:
+      return ELF::R_MyArch_RVC_JUMP;
+    case MyArch::fixup_myarch_rvc_branch:
+      return ELF::R_MyArch_RVC_BRANCH;
+    case MyArch::fixup_myarch_call:
+      return ELF::R_MyArch_CALL;
+    case MyArch::fixup_myarch_call_plt:
+      return ELF::R_MyArch_CALL_PLT;
+    }
+  }
 
   switch (Kind) {
   default:
-    llvm_unreachable("invalid fixup kind!");
-  /*case FK_Data_4:
-   Type = ELF::R_MyArch_32;
-    break;
-  case MyArch::fixup_MyArch_32:
-   // Type = ELF::R_MyArch_32;
-    break;
-  case MyArch::fixup_MyArch_GPREL16:
-   // Type = ELF::R_MyArch_GPREL16;
-    break;
-  case MyArch::fixup_MyArch_GOT:
-   // Type = ELF::R_MyArch_GOT16;
-    break;
-  case MyArch::fixup_MyArch_HI16:
-   // Type = ELF::R_MyArch_HI16;
-    break;
-  case MyArch::fixup_MyArch_LO16:
-   // Type = ELF::R_MyArch_LO16;
-    break;
-  case MyArch::fixup_MyArch_GOT_HI16:
-    //Type = ELF::R_MyArch_GOT_HI16;
-    break;
-  case MyArch::fixup_MyArch_GOT_LO16:
-    //Type = ELF::R_MyArch_GOT_LO16;
-    break;*/
-  }
-
-  //return Type;
-  return 0;
-}
-//@GetRelocType }
-
-bool
-MyArchELFObjectWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
-                                             unsigned Type) const {
-  // FIXME: This is extremelly conservative. This really needs to use a
-  // whitelist with a clear explanation for why each realocation needs to
-  // point to the symbol, not to the section.
-  switch (Type) {
-  default:
-    return true;
-
-  //case ELF::R_MyArch_GOT16:
-  // For MyArch pic mode, I think it's OK to return true but I didn't confirm.
-  //  llvm_unreachable("Should have been handled already");
-  // return true;
-
-  // These relocations might be paired with another relocation. The pairing is
-  // done by the static linker by matching the symbol. Since we only see one
-  // relocation at a time, we have to force them to relocate with a symbol to
-  // avoid ending up with a pair where one points to a section and another
-  // points to a symbol.
-  //case ELF::R_MyArch_HI16:
-  //case ELF::R_MyArch_LO16:
-  // R_MyArch_32 should be a relocation record, I don't know why Mips set it to 
-  // false.
-  //case ELF::R_MyArch_32:
-  //  return true;
-
-  //case ELF::R_MyArch_GPREL16:
-  //  return false;
+    Ctx.reportError(Fixup.getLoc(), "Unsupported relocation type");
+    return ELF::R_MyArch_NONE;
+  case FK_Data_1:
+    Ctx.reportError(Fixup.getLoc(), "1-byte data relocations not supported");
+    return ELF::R_MyArch_NONE;
+  case FK_Data_2:
+    Ctx.reportError(Fixup.getLoc(), "2-byte data relocations not supported");
+    return ELF::R_MyArch_NONE;
+  case FK_Data_4:
+    if (Expr->getKind() == MCExpr::Target &&
+        cast<MyArchMCExpr>(Expr)->getKind() == MyArchMCExpr::VK_MyArch_32_PCREL)
+      return ELF::R_MyArch_32_PCREL;
+    return ELF::R_MyArch_32;
+  case FK_Data_8:
+    return ELF::R_MyArch_64;
+  case FK_Data_Add_1:
+    return ELF::R_MyArch_ADD8;
+  case FK_Data_Add_2:
+    return ELF::R_MyArch_ADD16;
+  case FK_Data_Add_4:
+    return ELF::R_MyArch_ADD32;
+  case FK_Data_Add_8:
+    return ELF::R_MyArch_ADD64;
+  case FK_Data_Add_6b:
+    return ELF::R_MyArch_SET6;
+  case FK_Data_Sub_1:
+    return ELF::R_MyArch_SUB8;
+  case FK_Data_Sub_2:
+    return ELF::R_MyArch_SUB16;
+  case FK_Data_Sub_4:
+    return ELF::R_MyArch_SUB32;
+  case FK_Data_Sub_8:
+    return ELF::R_MyArch_SUB64;
+  case FK_Data_Sub_6b:
+    return ELF::R_MyArch_SUB6;
+  case MyArch::fixup_myarch_hi20:
+    return ELF::R_MyArch_HI20;
+  case MyArch::fixup_myarch_lo12_i:
+    return ELF::R_MyArch_LO12_I;
+  case MyArch::fixup_myarch_lo12_s:
+    return ELF::R_MyArch_LO12_S;
+  case MyArch::fixup_myarch_tprel_hi20:
+    return ELF::R_MyArch_TPREL_HI20;
+  case MyArch::fixup_myarch_tprel_lo12_i:
+    return ELF::R_MyArch_TPREL_LO12_I;
+  case MyArch::fixup_myarch_tprel_lo12_s:
+    return ELF::R_MyArch_TPREL_LO12_S;
+  case MyArch::fixup_myarch_tprel_add:
+    return ELF::R_MyArch_TPREL_ADD;
+  case MyArch::fixup_myarch_relax:
+    return ELF::R_MyArch_RELAX;
+  case MyArch::fixup_myarch_align:
+    return ELF::R_MyArch_ALIGN;
   }
 }
 
-std::unique_ptr<MCObjectTargetWriter> 
-llvm::createMyArchELFObjectWriter(const Triple &TT) {
-  uint8_t OSABI = MCELFObjectTargetWriter::getOSABI(TT.getOS());
-  bool IsN64 = false;
-  bool HasRelocationAddend = TT.isArch64Bit();
-  return std::make_unique<MyArchELFObjectWriter>(OSABI, HasRelocationAddend,
-                                               IsN64);
+std::unique_ptr<MCObjectTargetWriter>
+llvm::createMyArchELFObjectWriter(uint8_t OSABI, bool Is64Bit) {
+  return std::make_unique<MyArchELFObjectWriter>(OSABI, Is64Bit);
 }
-

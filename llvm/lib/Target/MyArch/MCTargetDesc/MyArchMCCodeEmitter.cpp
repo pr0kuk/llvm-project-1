@@ -1,292 +1,409 @@
-
-
-//===-- MyArchMCCodeEmitter.cpp - Convert MyArch Code to Machine Code ---------===//
+//===-- MyArchMCCodeEmitter.cpp - Convert MyArch code to machine code -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
 // This file implements the MyArchMCCodeEmitter class.
 //
 //===----------------------------------------------------------------------===//
-//
-
-#include "MyArchMCCodeEmitter.h"
-#if CH >= CH5_1
 
 #include "MCTargetDesc/MyArchBaseInfo.h"
 #include "MCTargetDesc/MyArchFixupKinds.h"
 #include "MCTargetDesc/MyArchMCExpr.h"
 #include "MCTargetDesc/MyArchMCTargetDesc.h"
-#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
-#include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbol.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/raw_ostream.h"
-
-#define DEBUG_TYPE "mccodeemitter"
-
-#define GET_INSTRMAP_INFO
-#include "MyArchGenInstrInfo.inc"
-#undef GET_INSTRMAP_INFO
 
 using namespace llvm;
 
-MCCodeEmitter *llvm::createMyArchMCCodeEmitterEB(const MCInstrInfo &MCII,
-                                               const MCRegisterInfo &MRI,
-                                               MCContext &Ctx) {
-  return new MyArchMCCodeEmitter(MCII, Ctx, false);
+#define DEBUG_TYPE "mccodeemitter"
+
+STATISTIC(MCNumEmitted, "Number of MC instructions emitted");
+STATISTIC(MCNumFixups, "Number of MC fixups created");
+
+namespace {
+class MyArchMCCodeEmitter : public MCCodeEmitter {
+  MyArchMCCodeEmitter(const MyArchMCCodeEmitter &) = delete;
+  void operator=(const MyArchMCCodeEmitter &) = delete;
+  MCContext &Ctx;
+  MCInstrInfo const &MCII;
+
+public:
+  MyArchMCCodeEmitter(MCContext &ctx, MCInstrInfo const &MCII)
+      : Ctx(ctx), MCII(MCII) {}
+
+  ~MyArchMCCodeEmitter() override {}
+
+  void encodeInstruction(const MCInst &MI, raw_ostream &OS,
+                         SmallVectorImpl<MCFixup> &Fixups,
+                         const MCSubtargetInfo &STI) const override;
+
+  void expandFunctionCall(const MCInst &MI, raw_ostream &OS,
+                          SmallVectorImpl<MCFixup> &Fixups,
+                          const MCSubtargetInfo &STI) const;
+
+  void expandAddTPRel(const MCInst &MI, raw_ostream &OS,
+                      SmallVectorImpl<MCFixup> &Fixups,
+                      const MCSubtargetInfo &STI) const;
+
+  /// TableGen'erated function for getting the binary encoding for an
+  /// instruction.
+  uint64_t getBinaryCodeForInstr(const MCInst &MI,
+                                 SmallVectorImpl<MCFixup> &Fixups,
+                                 const MCSubtargetInfo &STI) const;
+
+  /// Return binary encoding of operand. If the machine operand requires
+  /// relocation, record the relocation and return zero.
+  unsigned getMachineOpValue(const MCInst &MI, const MCOperand &MO,
+                             SmallVectorImpl<MCFixup> &Fixups,
+                             const MCSubtargetInfo &STI) const;
+
+  unsigned getImmOpValueAsr1(const MCInst &MI, unsigned OpNo,
+                             SmallVectorImpl<MCFixup> &Fixups,
+                             const MCSubtargetInfo &STI) const;
+
+  unsigned getImmOpValue(const MCInst &MI, unsigned OpNo,
+                         SmallVectorImpl<MCFixup> &Fixups,
+                         const MCSubtargetInfo &STI) const;
+
+  unsigned getVMaskReg(const MCInst &MI, unsigned OpNo,
+                       SmallVectorImpl<MCFixup> &Fixups,
+                       const MCSubtargetInfo &STI) const;
+
+private:
+  FeatureBitset computeAvailableFeatures(const FeatureBitset &FB) const;
+  void
+  verifyInstructionPredicates(const MCInst &MI,
+                              const FeatureBitset &AvailableFeatures) const;
+};
+} // end anonymous namespace
+
+MCCodeEmitter *llvm::createMyArchMCCodeEmitter(const MCInstrInfo &MCII,
+                                              const MCRegisterInfo &MRI,
+                                              MCContext &Ctx) {
+  return new MyArchMCCodeEmitter(Ctx, MCII);
 }
 
-MCCodeEmitter *llvm::createMyArchMCCodeEmitterEL(const MCInstrInfo &MCII,
-                                               const MCRegisterInfo &MRI,
-                                               MCContext &Ctx) {
-  return new MyArchMCCodeEmitter(MCII, Ctx, true);
-}
-
-void MyArchMCCodeEmitter::EmitByte(unsigned char C, raw_ostream &OS) const {
-  OS << (char)C;
-}
-
-void MyArchMCCodeEmitter::EmitInstruction(uint64_t Val, unsigned Size, raw_ostream &OS) const {
-  // Output the instruction encoding in little endian byte order.
-  for (unsigned i = 0; i < Size; ++i) {
-    unsigned Shift = IsLittleEndian ? i * 8 : (Size - 1 - i) * 8;
-    EmitByte((Val >> Shift) & 0xff, OS);
+// Expand PseudoCALL(Reg), PseudoTAIL and PseudoJump to AUIPC and JALR with
+// relocation types. We expand those pseudo-instructions while encoding them,
+// meaning AUIPC and JALR won't go through MyArch MC to MC compressed
+// instruction transformation. This is acceptable because AUIPC has no 16-bit
+// form and C_JALR has no immediate operand field.  We let linker relaxation
+// deal with it. When linker relaxation is enabled, AUIPC and JALR have a
+// chance to relax to JAL.
+// If the C extension is enabled, JAL has a chance relax to C_JAL.
+void MyArchMCCodeEmitter::expandFunctionCall(const MCInst &MI, raw_ostream &OS,
+                                            SmallVectorImpl<MCFixup> &Fixups,
+                                            const MCSubtargetInfo &STI) const {
+  MCInst TmpInst;
+  MCOperand Func;
+  MCRegister Ra;
+  if (MI.getOpcode() == MyArch::PseudoTAIL) {
+    Func = MI.getOperand(0);
+    Ra = MyArch::X6;
+  } else if (MI.getOpcode() == MyArch::PseudoCALLReg) {
+    Func = MI.getOperand(1);
+    Ra = MI.getOperand(0).getReg();
+  } else if (MI.getOpcode() == MyArch::PseudoCALL) {
+    Func = MI.getOperand(0);
+    Ra = MyArch::X1;
+  } else if (MI.getOpcode() == MyArch::PseudoJump) {
+    Func = MI.getOperand(1);
+    Ra = MI.getOperand(0).getReg();
   }
+  uint32_t Binary;
+
+  assert(Func.isExpr() && "Expected expression");
+
+  const MCExpr *CallExpr = Func.getExpr();
+
+  // Emit AUIPC Ra, Func with R_MyArch_CALL relocation type.
+  TmpInst = MCInstBuilder(MyArch::AUIPC)
+                .addReg(Ra)
+                .addOperand(MCOperand::createExpr(CallExpr));
+  Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
+  support::endian::write(OS, Binary, support::little);
+
+  if (MI.getOpcode() == MyArch::PseudoTAIL ||
+      MI.getOpcode() == MyArch::PseudoJump)
+    // Emit JALR X0, Ra, 0
+    TmpInst = MCInstBuilder(MyArch::JALR).addReg(MyArch::X0).addReg(Ra).addImm(0);
+  else
+    // Emit JALR Ra, Ra, 0
+    TmpInst = MCInstBuilder(MyArch::JALR).addReg(Ra).addReg(Ra).addImm(0);
+  Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
+  support::endian::write(OS, Binary, support::little);
 }
 
-/// encodeInstruction - Emit the instruction.
-/// Size the instruction (currently only 4 bytes)
-void MyArchMCCodeEmitter::
-encodeInstruction(const MCInst &MI, raw_ostream &OS,
-                  SmallVectorImpl<MCFixup> &Fixups,
-                  const MCSubtargetInfo &STI) const
-{
-  uint32_t Binary = getBinaryCodeForInstr(MI, Fixups, STI);
+// Expand PseudoAddTPRel to a simple ADD with the correct relocation.
+void MyArchMCCodeEmitter::expandAddTPRel(const MCInst &MI, raw_ostream &OS,
+                                        SmallVectorImpl<MCFixup> &Fixups,
+                                        const MCSubtargetInfo &STI) const {
+  MCOperand DestReg = MI.getOperand(0);
+  MCOperand SrcReg = MI.getOperand(1);
+  MCOperand TPReg = MI.getOperand(2);
+  assert(TPReg.isReg() && TPReg.getReg() == MyArch::X4 &&
+         "Expected thread pointer as second input to TP-relative add");
 
-  // Check for unimplemented opcodes.
-  // Unfortunately in MyArch both NOT and SLL will come in with Binary == 0
-  // so we have to special check for them.
-  unsigned Opcode = MI.getOpcode();
-  if ((Opcode != MyArch::SHL) && !Binary)
-    llvm_unreachable("unimplemented opcode in encodeInstruction()");
+  MCOperand SrcSymbol = MI.getOperand(3);
+  assert(SrcSymbol.isExpr() &&
+         "Expected expression as third input to TP-relative add");
+
+  const MyArchMCExpr *Expr = dyn_cast<MyArchMCExpr>(SrcSymbol.getExpr());
+  assert(Expr && Expr->getKind() == MyArchMCExpr::VK_MyArch_TPREL_ADD &&
+         "Expected tprel_add relocation on TP-relative symbol");
+
+  // Emit the correct tprel_add relocation for the symbol.
+  Fixups.push_back(MCFixup::create(
+      0, Expr, MCFixupKind(MyArch::fixup_myarch_tprel_add), MI.getLoc()));
+
+  // Emit fixup_myarch_relax for tprel_add where the relax feature is enabled.
+  if (STI.getFeatureBits()[MyArch::FeatureRelax]) {
+    const MCConstantExpr *Dummy = MCConstantExpr::create(0, Ctx);
+    Fixups.push_back(MCFixup::create(
+        0, Dummy, MCFixupKind(MyArch::fixup_myarch_relax), MI.getLoc()));
+  }
+
+  // Emit a normal ADD instruction with the given operands.
+  MCInst TmpInst = MCInstBuilder(MyArch::ADD)
+                       .addOperand(DestReg)
+                       .addOperand(SrcReg)
+                       .addOperand(TPReg);
+  uint32_t Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
+  support::endian::write(OS, Binary, support::little);
+}
+
+void MyArchMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
+                                           SmallVectorImpl<MCFixup> &Fixups,
+                                           const MCSubtargetInfo &STI) const {
+  verifyInstructionPredicates(MI,
+                              computeAvailableFeatures(STI.getFeatureBits()));
 
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
-  uint64_t TSFlags = Desc.TSFlags;
+  // Get byte count of instruction.
+  unsigned Size = Desc.getSize();
 
-  // Pseudo instructions don't get encoded and shouldn't be here
-  // in the first place!
- // if ((TSFlags & MyArch::FormMask) == MyArch::PseudoRET)
-  //  llvm_unreachable("Pseudo opcode found in encodeInstruction()");
-
-  // For now all instructions are 4 bytes
-  int Size = 4; // FIXME: Have Desc.getSize() return the correct value!
-
-  EmitInstruction(Binary, Size, OS);
-}
-
-//@CH8_1 {
-/// getBranch16TargetOpValue - Return binary encoding of the branch
-/// target operand. If the machine operand requires relocation,
-/// record the relocation and return zero.
-unsigned MyArchMCCodeEmitter::
-getBranch16TargetOpValue(const MCInst &MI, unsigned OpNo,
-                         SmallVectorImpl<MCFixup> &Fixups,
-                         const MCSubtargetInfo &STI) const {
-#if CH >= CH8_1 //1
-  const MCOperand &MO = MI.getOperand(OpNo);
-
-  // If the destination is an immediate, we have nothing to do.
-  if (MO.isImm()) return MO.getImm();
-  assert(MO.isExpr() && "getBranch16TargetOpValue expects only expressions");
-
-  const MCExpr *Expr = MO.getExpr();
-  Fixups.push_back(MCFixup::create(0, Expr,
-                                   MCFixupKind(MyArch::fixup_MyArch_LO16)));
-#endif
-  return 0;
-}
-
-/// getBranch24TargetOpValue - Return binary encoding of the branch
-/// target operand. If the machine operand requires relocation,
-/// record the relocation and return zero.
-unsigned MyArchMCCodeEmitter::
-getBranch24TargetOpValue(const MCInst &MI, unsigned OpNo,
-                       SmallVectorImpl<MCFixup> &Fixups,
-                       const MCSubtargetInfo &STI) const {
-#if CH >= CH8_1 //2
-  const MCOperand &MO = MI.getOperand(OpNo);
-
-  // If the destination is an immediate, we have nothing to do.
-  if (MO.isImm()) return MO.getImm();
-  assert(MO.isExpr() && "getBranch24TargetOpValue expects only expressions");
-
-  const MCExpr *Expr = MO.getExpr();
-  Fixups.push_back(MCFixup::create(0, Expr,
-                                   MCFixupKind(MyArch::fixup_MyArch_32)));
-#endif
-  return 0;
-}
-
-/// getJumpTargetOpValue - Return binary encoding of the jump
-/// target operand, such as JSUB. 
-/// If the machine operand requires relocation,
-/// record the relocation and return zero.
-//@getJumpTargetOpValue {
-unsigned MyArchMCCodeEmitter::
-getJumpTargetOpValue(const MCInst &MI, unsigned OpNo,
-                     SmallVectorImpl<MCFixup> &Fixups,
-                     const MCSubtargetInfo &STI) const {
-#if CH >= CH8_1 //3
-  unsigned Opcode = MI.getOpcode();
-  const MCOperand &MO = MI.getOperand(OpNo);
-  // If the destination is an immediate, we have nothing to do.
-  if (MO.isImm()) return MO.getImm();
-  assert(MO.isExpr() && "getJumpTargetOpValue expects only expressions");
-
-  const MCExpr *Expr = MO.getExpr();
-//#if CH >= CH9_1 //1
-  //if (Opcode == MyArch::JSUB || Opcode == MyArch::JMP || Opcode == MyArch::BAL)
-//#elif CH >= CH8_2 //1
-//  if (Opcode == MyArch::JMP || Opcode == MyArch::BAL)
-//#else
-//  if (Opcode == MyArch::JMP)
-//#endif //#if CH >= CH9_1 //1
- //   Fixups.push_back(MCFixup::create(0, Expr,
- //                                    MCFixupKind(MyArch::fixup_MyArch_32)));
- // else
- //   llvm_unreachable("unexpect opcode in getJumpAbsoluteTargetOpValue()");
-#endif
-  return 0;
-}
-//@CH8_1 }
-
-//@getExprOpValue {
-unsigned MyArchMCCodeEmitter::
-getExprOpValue(const MCExpr *Expr,SmallVectorImpl<MCFixup> &Fixups,
-               const MCSubtargetInfo &STI) const {
-//@getExprOpValue body {
-  MCExpr::ExprKind Kind = Expr->getKind();
-  if (Kind == MCExpr::Constant) {
-    return cast<MCConstantExpr>(Expr)->getValue();
+  // MyArchInstrInfo::getInstSizeInBytes hard-codes the number of expanded
+  // instructions for each pseudo, and must be updated when adding new pseudos
+  // or changing existing ones.
+  if (MI.getOpcode() == MyArch::PseudoCALLReg ||
+      MI.getOpcode() == MyArch::PseudoCALL ||
+      MI.getOpcode() == MyArch::PseudoTAIL ||
+      MI.getOpcode() == MyArch::PseudoJump) {
+    expandFunctionCall(MI, OS, Fixups, STI);
+    MCNumEmitted += 2;
+    return;
   }
 
-  if (Kind == MCExpr::Binary) {
-    unsigned Res = getExprOpValue(cast<MCBinaryExpr>(Expr)->getLHS(), Fixups, STI);
-    Res += getExprOpValue(cast<MCBinaryExpr>(Expr)->getRHS(), Fixups, STI);
-    return Res;
+  if (MI.getOpcode() == MyArch::PseudoAddTPRel) {
+    expandAddTPRel(MI, OS, Fixups, STI);
+    MCNumEmitted += 1;
+    return;
   }
 
-  if (Kind == MCExpr::Target) {
-    const MyArchMCExpr *MyArchExpr = cast<MyArchMCExpr>(Expr);
-
-    MyArch::Fixups FixupKind = MyArch::Fixups(0);
-    switch (MyArchExpr->getKind()) {
-    default: llvm_unreachable("Unsupported fixup kind for target expression!");
-#if CH >= CH6_1
-  //@switch {
-//    switch(cast<MCSymbolRefExpr>(Expr)->getKind()) {
-  //@switch }
-    case MyArchMCExpr::CEK_GPREL:
-      FixupKind = MyArch::fixup_MyArch_GPREL16;
-      break;
-#if CH >= CH9_1 //2
-    case MyArchMCExpr::CEK_GOT_CALL:
-      //FixupKind = MyArch::fixup_MyArch_CALL16;
-      break;
-#endif
-    case MyArchMCExpr::CEK_GOT:
-      FixupKind = MyArch::fixup_MyArch_GOT;
-      break;
-    case MyArchMCExpr::CEK_ABS_HI:
-      FixupKind = MyArch::fixup_MyArch_HI16;
-      break;
-    case MyArchMCExpr::CEK_ABS_LO:
-      FixupKind = MyArch::fixup_MyArch_LO16;
-      break;
-#if CH >= CH12_1
-    case MyArchMCExpr::CEK_TLSGD:
-      //FixupKind = MyArch::fixup_MyArch_TLSGD;
-      break;
-    case MyArchMCExpr::CEK_TLSLDM:
-      //FixupKind = MyArch::fixup_MyArch_TLSLDM;
-      break;
-    case MyArchMCExpr::CEK_DTP_HI:
-      //FixupKind = MyArch::fixup_MyArch_DTP_HI;
-      break;
-    case MyArchMCExpr::CEK_DTP_LO:
-     // FixupKind = MyArch::fixup_MyArch_DTP_LO;
-      break;
-    case MyArchMCExpr::CEK_GOTTPREL:
-     // FixupKind = MyArch::fixup_MyArch_GOTTPREL;
-      break;
-    case MyArchMCExpr::CEK_TP_HI:
-     // FixupKind = MyArch::fixup_MyArch_TP_HI;
-      break;
-    case MyArchMCExpr::CEK_TP_LO:
-      //FixupKind = MyArch::fixup_MyArch_TP_LO;
-      break;
-#endif
-    case MyArchMCExpr::CEK_GOT_HI16:
-      FixupKind = MyArch::fixup_MyArch_GOT_HI16;
-      break;
-    case MyArchMCExpr::CEK_GOT_LO16:
-      FixupKind = MyArch::fixup_MyArch_GOT_LO16;
-      break;
-#endif // #if CH >= CH6_1
-    } // switch
-    Fixups.push_back(MCFixup::create(0, Expr, MCFixupKind(FixupKind)));
-    return 0;
+  switch (Size) {
+  default:
+    llvm_unreachable("Unhandled encodeInstruction length!");
+  case 2: {
+    uint16_t Bits = getBinaryCodeForInstr(MI, Fixups, STI);
+    support::endian::write<uint16_t>(OS, Bits, support::little);
+    break;
+  }
+  case 4: {
+    uint32_t Bits = getBinaryCodeForInstr(MI, Fixups, STI);
+    support::endian::write(OS, Bits, support::little);
+    break;
+  }
   }
 
-
-  // All of the information is in the fixup.
-  return 0;
+  ++MCNumEmitted; // Keep track of the # of mi's emitted.
 }
 
-/// getMachineOpValue - Return binary encoding of operand. If the machine
-/// operand requires relocation, record the relocation and return zero.
-unsigned MyArchMCCodeEmitter::
-getMachineOpValue(const MCInst &MI, const MCOperand &MO,
-                  SmallVectorImpl<MCFixup> &Fixups,
-                  const MCSubtargetInfo &STI) const {
-  if (MO.isReg()) {
-    unsigned Reg = MO.getReg();
-    unsigned RegNo = Ctx.getRegisterInfo()->getEncodingValue(Reg);
-    return RegNo;
-  } else if (MO.isImm()) {
-    return static_cast<unsigned>(MO.getImm());
-  } else if (MO.isFPImm()) {
-    return static_cast<unsigned>(APFloat(MO.getFPImm())
-        .bitcastToAPInt().getHiBits(32).getLimitedValue());
-  }
-  // MO must be an Expr.
-  assert(MO.isExpr());
-  return getExprOpValue(MO.getExpr(),Fixups, STI);
-}
-
-/// getMemEncoding - Return binary encoding of memory related operand.
-/// If the offset operand requires relocation, record the relocation.
 unsigned
-MyArchMCCodeEmitter::getMemEncoding(const MCInst &MI, unsigned OpNo,
-                                  SmallVectorImpl<MCFixup> &Fixups,
-                                  const MCSubtargetInfo &STI) const {
-  // Base register is encoded in bits 20-16, offset is encoded in bits 15-0.
-  assert(MI.getOperand(OpNo).isReg());
-  unsigned RegBits = getMachineOpValue(MI, MI.getOperand(OpNo), Fixups, STI) << 16;
-  unsigned OffBits = getMachineOpValue(MI, MI.getOperand(OpNo+1), Fixups, STI);
+MyArchMCCodeEmitter::getMachineOpValue(const MCInst &MI, const MCOperand &MO,
+                                      SmallVectorImpl<MCFixup> &Fixups,
+                                      const MCSubtargetInfo &STI) const {
 
-  return (OffBits & 0xFFFF) | RegBits;
+  if (MO.isReg())
+    return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg());
+
+  if (MO.isImm())
+    return static_cast<unsigned>(MO.getImm());
+
+  llvm_unreachable("Unhandled expression!");
+  return 0;
 }
 
-#include "MyArchGenMCCodeEmitter.inc"
+unsigned
+MyArchMCCodeEmitter::getImmOpValueAsr1(const MCInst &MI, unsigned OpNo,
+                                      SmallVectorImpl<MCFixup> &Fixups,
+                                      const MCSubtargetInfo &STI) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
 
-#endif // #if CH >= CH5_1
+  if (MO.isImm()) {
+    unsigned Res = MO.getImm();
+    assert((Res & 1) == 0 && "LSB is non-zero");
+    return Res >> 1;
+  }
+
+  return getImmOpValue(MI, OpNo, Fixups, STI);
+}
+
+unsigned MyArchMCCodeEmitter::getImmOpValue(const MCInst &MI, unsigned OpNo,
+                                           SmallVectorImpl<MCFixup> &Fixups,
+                                           const MCSubtargetInfo &STI) const {
+  bool EnableRelax = STI.getFeatureBits()[MyArch::FeatureRelax];
+  const MCOperand &MO = MI.getOperand(OpNo);
+
+  MCInstrDesc const &Desc = MCII.get(MI.getOpcode());
+  unsigned MIFrm = Desc.TSFlags & MyArchII::InstFormatMask;
+
+  // If the destination is an immediate, there is nothing to do.
+  if (MO.isImm())
+    return MO.getImm();
+
+  assert(MO.isExpr() &&
+         "getImmOpValue expects only expressions or immediates");
+  const MCExpr *Expr = MO.getExpr();
+  MCExpr::ExprKind Kind = Expr->getKind();
+  MyArch::Fixups FixupKind = MyArch::fixup_myarch_invalid;
+  bool RelaxCandidate = false;
+  if (Kind == MCExpr::Target) {
+    const MyArchMCExpr *RVExpr = cast<MyArchMCExpr>(Expr);
+
+    switch (RVExpr->getKind()) {
+    case MyArchMCExpr::VK_MyArch_None:
+    case MyArchMCExpr::VK_MyArch_Invalid:
+    case MyArchMCExpr::VK_MyArch_32_PCREL:
+      llvm_unreachable("Unhandled fixup kind!");
+    case MyArchMCExpr::VK_MyArch_TPREL_ADD:
+      // tprel_add is only used to indicate that a relocation should be emitted
+      // for an add instruction used in TP-relative addressing. It should not be
+      // expanded as if representing an actual instruction operand and so to
+      // encounter it here is an error.
+      llvm_unreachable(
+          "VK_MyArch_TPREL_ADD should not represent an instruction operand");
+    case MyArchMCExpr::VK_MyArch_LO:
+      if (MIFrm == MyArchII::InstFormatI)
+        FixupKind = MyArch::fixup_myarch_lo12_i;
+      else if (MIFrm == MyArchII::InstFormatS)
+        FixupKind = MyArch::fixup_myarch_lo12_s;
+      else
+        llvm_unreachable("VK_MyArch_LO used with unexpected instruction format");
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_HI:
+      FixupKind = MyArch::fixup_myarch_hi20;
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_PCREL_LO:
+      if (MIFrm == MyArchII::InstFormatI)
+        FixupKind = MyArch::fixup_myarch_pcrel_lo12_i;
+      else if (MIFrm == MyArchII::InstFormatS)
+        FixupKind = MyArch::fixup_myarch_pcrel_lo12_s;
+      else
+        llvm_unreachable(
+            "VK_MyArch_PCREL_LO used with unexpected instruction format");
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_PCREL_HI:
+      FixupKind = MyArch::fixup_myarch_pcrel_hi20;
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_GOT_HI:
+      FixupKind = MyArch::fixup_myarch_got_hi20;
+      break;
+    case MyArchMCExpr::VK_MyArch_TPREL_LO:
+      if (MIFrm == MyArchII::InstFormatI)
+        FixupKind = MyArch::fixup_myarch_tprel_lo12_i;
+      else if (MIFrm == MyArchII::InstFormatS)
+        FixupKind = MyArch::fixup_myarch_tprel_lo12_s;
+      else
+        llvm_unreachable(
+            "VK_MyArch_TPREL_LO used with unexpected instruction format");
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_TPREL_HI:
+      FixupKind = MyArch::fixup_myarch_tprel_hi20;
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_TLS_GOT_HI:
+      FixupKind = MyArch::fixup_myarch_tls_got_hi20;
+      break;
+    case MyArchMCExpr::VK_MyArch_TLS_GD_HI:
+      FixupKind = MyArch::fixup_myarch_tls_gd_hi20;
+      break;
+    case MyArchMCExpr::VK_MyArch_CALL:
+      FixupKind = MyArch::fixup_myarch_call;
+      RelaxCandidate = true;
+      break;
+    case MyArchMCExpr::VK_MyArch_CALL_PLT:
+      FixupKind = MyArch::fixup_myarch_call_plt;
+      RelaxCandidate = true;
+      break;
+    }
+  } else if (Kind == MCExpr::SymbolRef &&
+             cast<MCSymbolRefExpr>(Expr)->getKind() == MCSymbolRefExpr::VK_None) {
+    if (Desc.getOpcode() == MyArch::JAL) {
+      FixupKind = MyArch::fixup_myarch_jal;
+    } else if (MIFrm == MyArchII::InstFormatB) {
+      FixupKind = MyArch::fixup_myarch_branch;
+    } else if (MIFrm == MyArchII::InstFormatCJ) {
+      FixupKind = MyArch::fixup_myarch_rvc_jump;
+    } else if (MIFrm == MyArchII::InstFormatCB) {
+      FixupKind = MyArch::fixup_myarch_rvc_branch;
+    }
+  }
+
+  assert(FixupKind != MyArch::fixup_myarch_invalid && "Unhandled expression!");
+
+  Fixups.push_back(
+      MCFixup::create(0, Expr, MCFixupKind(FixupKind), MI.getLoc()));
+  ++MCNumFixups;
+
+  // Ensure an R_MyArch_RELAX relocation will be emitted if linker relaxation is
+  // enabled and the current fixup will result in a relocation that may be
+  // relaxed.
+  if (EnableRelax && RelaxCandidate) {
+    const MCConstantExpr *Dummy = MCConstantExpr::create(0, Ctx);
+    Fixups.push_back(
+    MCFixup::create(0, Dummy, MCFixupKind(MyArch::fixup_myarch_relax),
+                    MI.getLoc()));
+    ++MCNumFixups;
+  }
+
+  return 0;
+}
+
+unsigned MyArchMCCodeEmitter::getVMaskReg(const MCInst &MI, unsigned OpNo,
+                                         SmallVectorImpl<MCFixup> &Fixups,
+                                         const MCSubtargetInfo &STI) const {
+  MCOperand MO = MI.getOperand(OpNo);
+  assert(MO.isReg() && "Expected a register.");
+
+  switch (MO.getReg()) {
+  default:
+    llvm_unreachable("Invalid mask register.");
+  case MyArch::V0:
+    return 0;
+  case MyArch::NoRegister:
+    return 1;
+  }
+}
+
+#define ENABLE_INSTR_PREDICATE_VERIFIER
+#include "MyArchGenMCCodeEmitter.inc"

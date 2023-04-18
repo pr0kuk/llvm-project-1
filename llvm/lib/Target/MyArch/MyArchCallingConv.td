@@ -1,34 +1,65 @@
+//===-- MyArchCallingConv.td - Calling Conventions MyArch ----*- tablegen -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 //===----------------------------------------------------------------------===//
-// This describes the calling conventions for MyArch architecture.
+//
+// This describes the calling conventions for the MyArch architecture.
+//
 //===----------------------------------------------------------------------===//
 
-//===----------------------------------------------------------------------===//
-// MyArch Return Value Calling Convention
-//===----------------------------------------------------------------------===//
-def RetCC_MyArch : CallingConv<[
-  // i32 return values
-  CCIfType<[i32, i64], CCAssignToReg<[R9, R10, R11, R12]>>,
+// The RISC-V calling convention is handled with custom code in
+// MyArchISelLowering.cpp (CC_MyArch).
 
-  // Integer values get stored in stack slots that are 4 bytes in
-  // size and 4-byte aligned.
-  CCIfType<[i64], CCAssignToStack<2, 1>>,
-  CCIfType<[i32], CCAssignToStack<1, 1>>
-]>;
+def CSR_ILP32_LP64
+    : CalleeSavedRegs<(add X1, X3, X4, X8, X9, (sequence "X%u", 18, 27))>;
 
-//===----------------------------------------------------------------------===//
-// MyArch Argument Calling Conventions
-//===----------------------------------------------------------------------===//
-def CC_MyArch : CallingConv<[
-  // Promote i8/i16 arguments to i32.
-  CCIfType<[i8, i16], CCPromoteToType<i32>>,
+def CSR_ILP32F_LP64F
+    : CalleeSavedRegs<(add CSR_ILP32_LP64,
+                       F8_F, F9_F, (sequence "F%u_F", 18, 27))>;
 
-  // The first 4 integer arguments are passed in integer registers.
-  CCIfType<[i32, i64], CCAssignToReg<[R9, R10, R11, R12]>>,
+def CSR_ILP32D_LP64D
+    : CalleeSavedRegs<(add CSR_ILP32_LP64,
+                       F8_D, F9_D, (sequence "F%u_D", 18, 27))>;
 
-  // Integer values get stored in stack slots that are 4 bytes in
-  // size and 4-byte aligned.
-  CCIfType<[i64], CCAssignToStack<2, 1>>,
-  CCIfType<[i32], CCAssignToStack<1, 1>>
-]>;
+// Needed for implementation of MyArchRegisterInfo::getNoPreservedMask()
+def CSR_NoRegs : CalleeSavedRegs<(add)>;
 
-def CSR_MyArch : CalleeSavedRegs<(add R0, R1, R3, R5, R6, R7, R8)>;
+// Interrupt handler needs to save/restore all registers that are used,
+// both Caller and Callee saved registers.
+def CSR_Interrupt : CalleeSavedRegs<(add X1,
+    (sequence "X%u", 3, 9),
+    (sequence "X%u", 10, 11),
+    (sequence "X%u", 12, 17),
+    (sequence "X%u", 18, 27),
+    (sequence "X%u", 28, 31))>;
+
+// Same as CSR_Interrupt, but including all 32-bit FP registers.
+def CSR_XLEN_F32_Interrupt: CalleeSavedRegs<(add X1,
+    (sequence "X%u", 3, 9),
+    (sequence "X%u", 10, 11),
+    (sequence "X%u", 12, 17),
+    (sequence "X%u", 18, 27),
+    (sequence "X%u", 28, 31),
+    (sequence "F%u_F", 0, 7),
+    (sequence "F%u_F", 10, 11),
+    (sequence "F%u_F", 12, 17),
+    (sequence "F%u_F", 28, 31),
+    (sequence "F%u_F", 8, 9),
+    (sequence "F%u_F", 18, 27))>;
+
+// Same as CSR_Interrupt, but including all 64-bit FP registers.
+def CSR_XLEN_F64_Interrupt: CalleeSavedRegs<(add X1,
+    (sequence "X%u", 3, 9),
+    (sequence "X%u", 10, 11),
+    (sequence "X%u", 12, 17),
+    (sequence "X%u", 18, 27),
+    (sequence "X%u", 28, 31),
+    (sequence "F%u_D", 0, 7),
+    (sequence "F%u_D", 10, 11),
+    (sequence "F%u_D", 12, 17),
+    (sequence "F%u_D", 28, 31),
+    (sequence "F%u_D", 8, 9),
+    (sequence "F%u_D", 18, 27))>;

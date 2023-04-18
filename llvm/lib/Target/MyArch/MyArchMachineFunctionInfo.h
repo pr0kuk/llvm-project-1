@@ -1,3 +1,9 @@
+//=- MyArchMachineFunctionInfo.h - MyArch machine function info -----*- C++ -*-=//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 //===----------------------------------------------------------------------===//
 //
 // This file declares MyArch-specific per-machine-function information.
@@ -7,52 +13,51 @@
 #ifndef LLVM_LIB_TARGET_MyArch_MyArchMACHINEFUNCTIONINFO_H
 #define LLVM_LIB_TARGET_MyArch_MyArchMACHINEFUNCTIONINFO_H
 
+#include "MyArchSubtarget.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include <vector>
 
 namespace llvm {
 
-/// MyArchFunctionInfo - This class is derived from MachineFunction private
-/// MyArch target-specific information for each MachineFunction.
-class MyArchFunctionInfo : public MachineFunctionInfo {
-  virtual void anchor();
-
-  bool ReturnStackOffsetSet = false;
-  unsigned ReturnStackOffset = -1U;
-
+/// MyArchMachineFunctionInfo - This class is derived from MachineFunctionInfo
+/// and contains private MyArch-specific information for each MachineFunction.
+class MyArchMachineFunctionInfo : public MachineFunctionInfo {
+private:
   /// FrameIndex for start of varargs area
   int VarArgsFrameIndex = 0;
   /// Size of the save area used for varargs
   int VarArgsSaveSize = 0;
-  /// Size of stack frame to save callee saved registers
-  unsigned CalleeSavedStackSize = 0;
+  /// FrameIndex used for transferring values between 64-bit FPRs and a pair
+  /// of 32-bit GPRs via the stack.
+  int MoveF64FrameIndex = -1;
+  /// Size of any opaque stack adjustment due to save/restore libcalls.
+  unsigned LibCallStackSize = 0;
 
 public:
-  MyArchFunctionInfo() {}
-  explicit MyArchFunctionInfo(MachineFunction &MF) {}
-  ~MyArchFunctionInfo() {}
+  MyArchMachineFunctionInfo(const MachineFunction &MF) {}
 
-  void setVarArgsFrameIndex(int Off) { VarArgsFrameIndex = Off; }
   int getVarArgsFrameIndex() const { return VarArgsFrameIndex; }
+  void setVarArgsFrameIndex(int Index) { VarArgsFrameIndex = Index; }
 
+  unsigned getVarArgsSaveSize() const { return VarArgsSaveSize; }
   void setVarArgsSaveSize(int Size) { VarArgsSaveSize = Size; }
-  int getVarArgsSaveSize() const { return VarArgsSaveSize; }
 
-  unsigned getCalleeSavedStackSize() const { return CalleeSavedStackSize; }
-  void setCalleeSavedStackSize(unsigned Size) { CalleeSavedStackSize = Size; }
-
-  void setReturnStackOffset(unsigned Off) {
-    assert(!ReturnStackOffsetSet && "Return stack offset set twice");
-    ReturnStackOffset = Off;
-    ReturnStackOffsetSet = true;
+  int getMoveF64FrameIndex(MachineFunction &MF) {
+    if (MoveF64FrameIndex == -1)
+      MoveF64FrameIndex =
+          MF.getFrameInfo().CreateStackObject(8, Align(8), false);
+    return MoveF64FrameIndex;
   }
 
-  unsigned getReturnStackOffset() const {
-    assert(ReturnStackOffsetSet && "Return stack offset not set");
-    return ReturnStackOffset;
-  }
+  unsigned getLibCallStackSize() const { return LibCallStackSize; }
+  void setLibCallStackSize(unsigned Size) { LibCallStackSize = Size; }
 
-  // unsigned MaxCallStackReq = 0;
+  bool useSaveRestoreLibCalls(const MachineFunction &MF) const {
+    // We cannot use fixed locations for the callee saved spill slots if the
+    // function uses a varargs save area.
+    return MF.getSubtarget<MyArchSubtarget>().enableSaveRestore() &&
+           VarArgsSaveSize == 0 && !MF.getFrameInfo().hasTailCall();
+  }
 };
 
 } // end namespace llvm

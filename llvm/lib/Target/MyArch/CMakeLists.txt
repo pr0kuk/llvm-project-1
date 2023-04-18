@@ -2,42 +2,48 @@ add_llvm_component_group(MyArch)
 
 set(LLVM_TARGET_DEFINITIONS MyArch.td)
 
-# Generate MyArchGenRegisterInfo.inc and MyArchGenInstrInfo.inc which included by
-#  your hand code C++ files.
-# MyArchGenRegisterInfo.inc came from MyArchRegisterInfo.td, MyArchGenInstrInfo.inc
-#  came from MyArchInstrInfo.td.
-tablegen(LLVM MyArchGenRegisterInfo.inc -gen-register-info)
-tablegen(LLVM MyArchGenInstrInfo.inc -gen-instr-info)
-tablegen(LLVM MyArchGenCallingConv.inc -gen-callingconv)
-tablegen(LLVM MyArchGenMCPseudoLowering.inc -gen-pseudo-lowering)
-tablegen(LLVM MyArchGenMCCodeEmitter.inc -gen-emitter)
-tablegen(LLVM MyArchGenSubtargetInfo.inc -gen-subtarget)
+tablegen(LLVM MyArchGenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM MyArchGenAsmWriter.inc -gen-asm-writer)
+tablegen(LLVM MyArchGenCompressInstEmitter.inc -gen-compress-inst-emitter)
 tablegen(LLVM MyArchGenDAGISel.inc -gen-dag-isel)
+tablegen(LLVM MyArchGenDisassemblerTables.inc -gen-disassembler)
+tablegen(LLVM MyArchGenGlobalISel.inc -gen-global-isel)
+tablegen(LLVM MyArchGenInstrInfo.inc -gen-instr-info)
+tablegen(LLVM MyArchGenMCCodeEmitter.inc -gen-emitter)
+tablegen(LLVM MyArchGenMCPseudoLowering.inc -gen-pseudo-lowering)
+tablegen(LLVM MyArchGenRegisterBank.inc -gen-register-bank)
+tablegen(LLVM MyArchGenRegisterInfo.inc -gen-register-info)
+tablegen(LLVM MyArchGenSearchableTables.inc -gen-searchable-tables)
+tablegen(LLVM MyArchGenSubtargetInfo.inc -gen-subtarget)
 
-#tablegen(LLVM MyArchGenDisassemblerTables.inc -gen-disassembler)
-
-# MyArchCommonTableGen must be defined
 add_public_tablegen_target(MyArchCommonTableGen)
 
-# MyArchCodeGen should match with LLVMBuild.txt MyArchCodeGen
 add_llvm_target(MyArchCodeGen
   MyArchAsmPrinter.cpp
+  MyArchCallLowering.cpp
+  MyArchCleanupVSETVLI.cpp
+  MyArchExpandAtomicPseudoInsts.cpp
+  MyArchExpandPseudoInsts.cpp
   MyArchFrameLowering.cpp
   MyArchInstrInfo.cpp
-  MyArchISelDagToDag.cpp
+  MyArchInstructionSelector.cpp
+  MyArchISelDAGToDAG.cpp
   MyArchISelLowering.cpp
-  MyArchMachineFunctionInfo.cpp
+  MyArchLegalizerInfo.cpp
   MyArchMCInstLower.cpp
+  MyArchMergeBaseOffset.cpp
+  MyArchRegisterBankInfo.cpp
   MyArchRegisterInfo.cpp
   MyArchSubtarget.cpp
   MyArchTargetMachine.cpp
+  MyArchTargetObjectFile.cpp
+  MyArchTargetTransformInfo.cpp
 
   LINK_COMPONENTS
   Analysis
   AsmPrinter
-  CodeGen
   Core
+  CodeGen
   MC
   MyArchDesc
   MyArchInfo
@@ -48,7 +54,9 @@ add_llvm_target(MyArchCodeGen
 
   ADD_TO_COMPONENT
   MyArch
-)
+  )
 
-add_subdirectory(TargetInfo)
+add_subdirectory(AsmParser)
+add_subdirectory(Disassembler)
 add_subdirectory(MCTargetDesc)
+add_subdirectory(TargetInfo)

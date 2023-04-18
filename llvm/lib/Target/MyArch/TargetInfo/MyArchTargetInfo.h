@@ -1,3 +1,11 @@
+//===-- MyArchTargetInfo.h - MyArch Target Implementation ---------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef LLVM_LIB_TARGET_MyArch_TARGETINFO_MyArchTARGETINFO_H
 #define LLVM_LIB_TARGET_MyArch_TARGETINFO_MyArchTARGETINFO_H
 
@@ -6,6 +14,7 @@ namespace llvm {
 class Target;
 
 Target &getTheMyArchTarget();
+//Target &getTheMyArch64Target();
 
 } // namespace llvm
 

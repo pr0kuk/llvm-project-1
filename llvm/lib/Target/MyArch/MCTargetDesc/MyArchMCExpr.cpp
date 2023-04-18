@@ -1,147 +1,238 @@
-//===-- MyArchMCExpr.cpp - MyArch specific MC expression classes --------------===//
+//===-- MyArchMCExpr.cpp - MyArch specific MC expression classes ------------===//
 //
-//                     The LLVM Compiler Infrastructure
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+//===----------------------------------------------------------------------===//
+//
+// This file contains the implementation of the assembly expression modifiers
+// accepted by the MyArch architecture (e.g. ":lo12:", ":gottprel_g1:", ...).
 //
 //===----------------------------------------------------------------------===//
 
-#include "MyArch.h"
-
-#if CH >= CH5_1
-
 #include "MyArchMCExpr.h"
+#include "MCTargetDesc/MyArchAsmBackend.h"
+#include "MyArchFixupKinds.h"
 #include "llvm/BinaryFormat/ELF.h"
-#include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/MCAsmLayout.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
-#include "llvm/MC/MCObjectStreamer.h"
+#include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbolELF.h"
+#include "llvm/MC/MCValue.h"
+#include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
-#define DEBUG_TYPE "MyArchmcexpr"
+#define DEBUG_TYPE "myarchmcexpr"
 
-const MyArchMCExpr *MyArchMCExpr::create(MyArchMCExpr::MyArchExprKind Kind,
-                                     const MCExpr *Expr, MCContext &Ctx) {
-  return new (Ctx) MyArchMCExpr(Kind, Expr);
-}
-
-const MyArchMCExpr *MyArchMCExpr::create(const MCSymbol *Symbol, MyArchMCExpr::MyArchExprKind Kind,
-                         MCContext &Ctx) {
-  const MCSymbolRefExpr *MCSym =
-      MCSymbolRefExpr::create(Symbol, MCSymbolRefExpr::VK_None, Ctx);
-  return new (Ctx) MyArchMCExpr(Kind, MCSym);
-}
-
-const MyArchMCExpr *MyArchMCExpr::createGpOff(MyArchMCExpr::MyArchExprKind Kind,
-                                          const MCExpr *Expr, MCContext &Ctx) {
-  return create(Kind, create(CEK_None, create(CEK_GPREL, Expr, Ctx), Ctx), Ctx);
+const MyArchMCExpr *MyArchMCExpr::create(const MCExpr *Expr, VariantKind Kind,
+                                       MCContext &Ctx) {
+  return new (Ctx) MyArchMCExpr(Expr, Kind);
 }
 
 void MyArchMCExpr::printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const {
-  int64_t AbsVal;
+  VariantKind Kind = getKind();
+  bool HasVariant = ((Kind != VK_MyArch_None) && (Kind != VK_MyArch_CALL) &&
+                     (Kind != VK_MyArch_CALL_PLT));
 
-  switch (Kind) {
-  case CEK_None:
-  case CEK_Special:
-    llvm_unreachable("CEK_None and CEK_Special are invalid");
-    break;
-  case CEK_CALL_HI16:
-    OS << "%call_hi";
-    break;
-  case CEK_CALL_LO16:
-    OS << "%call_lo";
-    break;
-  case CEK_DTP_HI:
-    OS << "%dtp_hi";
-    break;
-  case CEK_DTP_LO:
-    OS << "%dtp_lo";
-    break;
-  case CEK_GOT:
-    OS << "%got";
-    break;
-  case CEK_GOTTPREL:
-    OS << "%gottprel";
-    break;
-  case CEK_GOT_CALL:
-    OS << "%call16";
-    break;
-  case CEK_GOT_DISP:
-    OS << "%got_disp";
-    break;
-  case CEK_GOT_HI16:
-    OS << "%got_hi";
-    break;
-  case CEK_GOT_LO16:
-    OS << "%got_lo";
-    break;
-  case CEK_GPREL:
-    OS << "%gp_rel";
-    break;
-  case CEK_ABS_HI:
-    OS << "%hi";
-    break;
-  case CEK_ABS_LO:
-    OS << "%lo";
-    break;
-  case CEK_TLSGD:
-    OS << "%tlsgd";
-    break;
-  case CEK_TLSLDM:
-    OS << "%tlsldm";
-    break;
-  case CEK_TP_HI:
-    OS << "%tp_hi";
-    break;
-  case CEK_TP_LO:
-    OS << "%tp_lo";
-    break;
-  }
-
-  OS << '(';
-  if (Expr->evaluateAsAbsolute(AbsVal))
-    OS << AbsVal;
-  else
-    Expr->print(OS, MAI, true);
-  OS << ')';
+  if (HasVariant)
+    OS << '%' << getVariantKindName(getKind()) << '(';
+  Expr->print(OS, MAI);
+  if (Kind == VK_MyArch_CALL_PLT)
+    OS << "@plt";
+  if (HasVariant)
+    OS << ')';
 }
 
-bool
-MyArchMCExpr::evaluateAsRelocatableImpl(MCValue &Res,
-                                      const MCAsmLayout *Layout,
-                                      const MCFixup *Fixup) const {
-  return getSubExpr()->evaluateAsRelocatable(Res, Layout, Fixup);
+const MCFixup *MyArchMCExpr::getPCRelHiFixup(const MCFragment **DFOut) const {
+  MCValue AUIPCLoc;
+  if (!getSubExpr()->evaluateAsRelocatable(AUIPCLoc, nullptr, nullptr))
+    return nullptr;
+
+  const MCSymbolRefExpr *AUIPCSRE = AUIPCLoc.getSymA();
+  if (!AUIPCSRE)
+    return nullptr;
+
+  const MCSymbol *AUIPCSymbol = &AUIPCSRE->getSymbol();
+  const auto *DF = dyn_cast_or_null<MCDataFragment>(AUIPCSymbol->getFragment());
+
+  if (!DF)
+    return nullptr;
+
+  uint64_t Offset = AUIPCSymbol->getOffset();
+  if (DF->getContents().size() == Offset) {
+    DF = dyn_cast_or_null<MCDataFragment>(DF->getNextNode());
+    if (!DF)
+      return nullptr;
+    Offset = 0;
+  }
+
+  for (const MCFixup &F : DF->getFixups()) {
+    if (F.getOffset() != Offset)
+      continue;
+
+    switch ((unsigned)F.getKind()) {
+    default:
+      continue;
+    case MyArch::fixup_myarch_got_hi20:
+    case MyArch::fixup_myarch_tls_got_hi20:
+    case MyArch::fixup_myarch_tls_gd_hi20:
+    case MyArch::fixup_myarch_pcrel_hi20:
+      if (DFOut)
+        *DFOut = DF;
+      return &F;
+    }
+  }
+
+  return nullptr;
+}
+
+bool MyArchMCExpr::evaluateAsRelocatableImpl(MCValue &Res,
+                                            const MCAsmLayout *Layout,
+                                            const MCFixup *Fixup) const {
+  if (!getSubExpr()->evaluateAsRelocatable(Res, Layout, Fixup))
+    return false;
+
+  // Some custom fixup types are not valid with symbol difference expressions
+  if (Res.getSymA() && Res.getSymB()) {
+    switch (getKind()) {
+    default:
+      return true;
+    case VK_MyArch_LO:
+    case VK_MyArch_HI:
+    case VK_MyArch_PCREL_LO:
+    case VK_MyArch_PCREL_HI:
+    case VK_MyArch_GOT_HI:
+    case VK_MyArch_TPREL_LO:
+    case VK_MyArch_TPREL_HI:
+    case VK_MyArch_TPREL_ADD:
+    case VK_MyArch_TLS_GOT_HI:
+    case VK_MyArch_TLS_GD_HI:
+      return false;
+    }
+  }
+
+  return true;
 }
 
 void MyArchMCExpr::visitUsedExpr(MCStreamer &Streamer) const {
   Streamer.visitUsedExpr(*getSubExpr());
 }
 
+MyArchMCExpr::VariantKind MyArchMCExpr::getVariantKindForName(StringRef name) {
+  return StringSwitch<MyArchMCExpr::VariantKind>(name)
+      .Case("lo", VK_MyArch_LO)
+      .Case("hi", VK_MyArch_HI)
+      .Case("pcrel_lo", VK_MyArch_PCREL_LO)
+      .Case("pcrel_hi", VK_MyArch_PCREL_HI)
+      .Case("got_pcrel_hi", VK_MyArch_GOT_HI)
+      .Case("tprel_lo", VK_MyArch_TPREL_LO)
+      .Case("tprel_hi", VK_MyArch_TPREL_HI)
+      .Case("tprel_add", VK_MyArch_TPREL_ADD)
+      .Case("tls_ie_pcrel_hi", VK_MyArch_TLS_GOT_HI)
+      .Case("tls_gd_pcrel_hi", VK_MyArch_TLS_GD_HI)
+      .Default(VK_MyArch_Invalid);
+}
+
+StringRef MyArchMCExpr::getVariantKindName(VariantKind Kind) {
+  switch (Kind) {
+  default:
+    llvm_unreachable("Invalid ELF symbol kind");
+  case VK_MyArch_LO:
+    return "lo";
+  case VK_MyArch_HI:
+    return "hi";
+  case VK_MyArch_PCREL_LO:
+    return "pcrel_lo";
+  case VK_MyArch_PCREL_HI:
+    return "pcrel_hi";
+  case VK_MyArch_GOT_HI:
+    return "got_pcrel_hi";
+  case VK_MyArch_TPREL_LO:
+    return "tprel_lo";
+  case VK_MyArch_TPREL_HI:
+    return "tprel_hi";
+  case VK_MyArch_TPREL_ADD:
+    return "tprel_add";
+  case VK_MyArch_TLS_GOT_HI:
+    return "tls_ie_pcrel_hi";
+  case VK_MyArch_TLS_GD_HI:
+    return "tls_gd_pcrel_hi";
+  }
+}
+
+static void fixELFSymbolsInTLSFixupsImpl(const MCExpr *Expr, MCAssembler &Asm) {
+  switch (Expr->getKind()) {
+  case MCExpr::Target:
+    llvm_unreachable("Can't handle nested target expression");
+    break;
+  case MCExpr::Constant:
+    break;
+
+  case MCExpr::Binary: {
+    const MCBinaryExpr *BE = cast<MCBinaryExpr>(Expr);
+    fixELFSymbolsInTLSFixupsImpl(BE->getLHS(), Asm);
+    fixELFSymbolsInTLSFixupsImpl(BE->getRHS(), Asm);
+    break;
+  }
+
+  case MCExpr::SymbolRef: {
+    // We're known to be under a TLS fixup, so any symbol should be
+    // modified. There should be only one.
+    const MCSymbolRefExpr &SymRef = *cast<MCSymbolRefExpr>(Expr);
+    cast<MCSymbolELF>(SymRef.getSymbol()).setType(ELF::STT_TLS);
+    break;
+  }
+
+  case MCExpr::Unary:
+    fixELFSymbolsInTLSFixupsImpl(cast<MCUnaryExpr>(Expr)->getSubExpr(), Asm);
+    break;
+  }
+}
+
 void MyArchMCExpr::fixELFSymbolsInTLSFixups(MCAssembler &Asm) const {
-  switch ((int)getKind()) {
-  case CEK_None:
-  case CEK_Special:
-    llvm_unreachable("CEK_None and CEK_Special are invalid");
-    break;
-  case CEK_CALL_HI16:
-  case CEK_CALL_LO16:
+  switch (getKind()) {
+  default:
+    return;
+  case VK_MyArch_TPREL_HI:
+  case VK_MyArch_TLS_GOT_HI:
+  case VK_MyArch_TLS_GD_HI:
     break;
   }
+
+  fixELFSymbolsInTLSFixupsImpl(getSubExpr(), Asm);
 }
 
-bool MyArchMCExpr::isGpOff(MyArchExprKind &Kind) const {
-  if (const MyArchMCExpr *S1 = dyn_cast<const MyArchMCExpr>(getSubExpr())) {
-    if (const MyArchMCExpr *S2 = dyn_cast<const MyArchMCExpr>(S1->getSubExpr())) {
-      if (S1->getKind() == CEK_None && S2->getKind() == CEK_GPREL) {
-        Kind = getKind();
-        return true;
-      }
-    }
+bool MyArchMCExpr::evaluateAsConstant(int64_t &Res) const {
+  MCValue Value;
+
+  if (Kind == VK_MyArch_PCREL_HI || Kind == VK_MyArch_PCREL_LO ||
+      Kind == VK_MyArch_GOT_HI || Kind == VK_MyArch_TPREL_HI ||
+      Kind == VK_MyArch_TPREL_LO || Kind == VK_MyArch_TPREL_ADD ||
+      Kind == VK_MyArch_TLS_GOT_HI || Kind == VK_MyArch_TLS_GD_HI ||
+      Kind == VK_MyArch_CALL || Kind == VK_MyArch_CALL_PLT)
+    return false;
+
+  if (!getSubExpr()->evaluateAsRelocatable(Value, nullptr, nullptr))
+    return false;
+
+  if (!Value.isAbsolute())
+    return false;
+
+  Res = evaluateAsInt64(Value.getConstant());
+  return true;
+}
+
+int64_t MyArchMCExpr::evaluateAsInt64(int64_t Value) const {
+  switch (Kind) {
+  default:
+    llvm_unreachable("Invalid kind");
+  case VK_MyArch_LO:
+    return SignExtend64<12>(Value);
+  case VK_MyArch_HI:
+    // Add 1 if bit 11 is 1, to compensate for low 12 bits being negative.
+    return ((Value + 0x800) >> 12) & 0xfffff;
   }
-  return false;
 }
-
-#endif

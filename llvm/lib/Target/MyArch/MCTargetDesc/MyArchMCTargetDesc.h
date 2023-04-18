@@ -1,8 +1,21 @@
+//===-- MyArchMCTargetDesc.h - MyArch Target Descriptions ---------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file provides MyArch specific target descriptions.
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef LLVM_LIB_TARGET_MyArch_MCTARGETDESC_MyArchMCTARGETDESC_H
 #define LLVM_LIB_TARGET_MyArch_MCTARGETDESC_MyArchMCTARGETDESC_H
 
-#include "llvm/Support/DataTypes.h"
+#include "llvm/Config/config.h"
 #include "llvm/MC/MCTargetOptions.h"
+#include "llvm/Support/DataTypes.h"
 #include <memory>
 
 namespace llvm {
@@ -10,38 +23,32 @@ class MCAsmBackend;
 class MCCodeEmitter;
 class MCContext;
 class MCInstrInfo;
-class MCRegisterInfo;
 class MCObjectTargetWriter;
 class MCRegisterInfo;
 class MCSubtargetInfo;
 class Target;
-class Triple;
 
-extern Target TheMyArchTarget;
+MCCodeEmitter *createMyArchMCCodeEmitter(const MCInstrInfo &MCII,
+                                        const MCRegisterInfo &MRI,
+                                        MCContext &Ctx);
 
-MCCodeEmitter *createMyArchMCCodeEmitterEB(const MCInstrInfo &MCII,
-                                         const MCRegisterInfo &MRI,
-                                         MCContext &Ctx);
-MCCodeEmitter *createMyArchMCCodeEmitterEL(const MCInstrInfo &MCII,
-                                         const MCRegisterInfo &MRI,
-                                         MCContext &Ctx);
+MCAsmBackend *createMyArchAsmBackend(const Target &T, const MCSubtargetInfo &STI,
+                                    const MCRegisterInfo &MRI,
+                                    const MCTargetOptions &Options);
 
-MCAsmBackend *createMyArchAsmBackend(const Target &T,
-                                   const MCSubtargetInfo &STI,
-                                   const MCRegisterInfo &MRI,
-                                   const MCTargetOptions &Options);
+std::unique_ptr<MCObjectTargetWriter> createMyArchELFObjectWriter(uint8_t OSABI,
+                                                                 bool Is64Bit);
+}
 
-std::unique_ptr<MCObjectTargetWriter> createMyArchELFObjectWriter(const Triple &TT);
-
-} // End llvm namespace
-
-// Defines symbolic names for MyArch registers.  This defines a mapping from
-// register name to register number.
+// Defines symbolic names for RISC-V registers.
 #define GET_REGINFO_ENUM
 #include "MyArchGenRegisterInfo.inc"
 
-// Defines symbolic names for the MyArch instructions.
+// Defines symbolic names for RISC-V instructions.
 #define GET_INSTRINFO_ENUM
 #include "MyArchGenInstrInfo.inc"
+
+#define GET_SUBTARGETINFO_ENUM
+#include "MyArchGenSubtargetInfo.inc"
 
 #endif
