@@ -666,7 +666,7 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
   case llvm::Triple::ve:
     return new LinuxTargetInfo<VETargetInfo>(Triple, Opts);
   case llvm::Triple::xtensa:
-    return new LinuxTargetInfo<XtensaTargetInfo>(Triple, Opts);
+    return new XtensaTargetInfo(Triple, Opts);
   case llvm::Triple::csky:
     switch (os) {
     case llvm::Triple::Linux:
