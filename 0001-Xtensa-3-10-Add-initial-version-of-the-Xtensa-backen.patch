@@ -1,0 +1,317 @@
+From 52804a7f22a20e020caacb71571e0cca712f0a12 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:45:59 +0100
+Subject: [PATCH] [Xtensa 3/10] Add initial version of the Xtensa backend
+
+Add Xtensa MCTargetDesc stub. Add XtensaTargetMachine and XtensaTargetInfo.
+Modify llib/Target/LLVMBuild.txt. Now Xtensa target could be builded as EXPERIMENTAL.
+
+Differential Revision: https://reviews.llvm.org/D64829
+---
+ llvm/lib/Target/Xtensa/CMakeLists.txt         | 18 +++++
+ .../Target/Xtensa/MCTargetDesc/CMakeLists.txt | 11 +++
+ .../MCTargetDesc/XtensaMCTargetDesc.cpp       | 13 ++++
+ .../Xtensa/MCTargetDesc/XtensaMCTargetDesc.h  | 18 +++++
+ .../Target/Xtensa/TargetInfo/CMakeLists.txt   | 10 +++
+ .../Xtensa/TargetInfo/XtensaTargetInfo.cpp    | 23 ++++++
+ .../Xtensa/TargetInfo/XtensaTargetInfo.h      | 20 ++++++
+ .../lib/Target/Xtensa/XtensaTargetMachine.cpp | 71 +++++++++++++++++++
+ llvm/lib/Target/Xtensa/XtensaTargetMachine.h  | 46 ++++++++++++
+ 9 files changed, 230 insertions(+)
+ create mode 100644 llvm/lib/Target/Xtensa/CMakeLists.txt
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h
+ create mode 100644 llvm/lib/Target/Xtensa/TargetInfo/CMakeLists.txt
+ create mode 100644 llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.h
+ create mode 100644 llvm/lib/Target/Xtensa/XtensaTargetMachine.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/XtensaTargetMachine.h
+
+diff --git a/llvm/lib/Target/Xtensa/CMakeLists.txt b/llvm/lib/Target/Xtensa/CMakeLists.txt
+new file mode 100644
+index 000000000000..83fb0f15dd53
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/CMakeLists.txt
+@@ -0,0 +1,18 @@
++add_llvm_component_group(Xtensa)
++
++add_llvm_target(XtensaCodeGen
++  XtensaTargetMachine.cpp
++
++  LINK_COMPONENTS
++  CodeGen
++  Core
++  Support
++  Target
++  XtensaInfo
++
++  ADD_TO_COMPONENT
++  Xtensa
++  )
++
++add_subdirectory(MCTargetDesc)
++add_subdirectory(TargetInfo)
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+new file mode 100644
+index 000000000000..0febab437acb
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+@@ -0,0 +1,11 @@
++add_llvm_component_library(LLVMXtensaDesc
++  XtensaMCTargetDesc.cpp
++
++  LINK_COMPONENTS
++  MC
++  Support
++  XtensaInfo
++
++  ADD_TO_COMPONENT
++  Xtensa
++ )
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+new file mode 100644
+index 000000000000..1b9190f83e9d
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+@@ -0,0 +1,13 @@
++//===-- XtensaMCTargetDesc.cpp - Xtensa target descriptions ---------------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++#include "XtensaMCTargetDesc.h"
++
++// We need to define this function for linking succeed
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTargetMC() {}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h
+new file mode 100644
+index 000000000000..05400d0093d6
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h
+@@ -0,0 +1,18 @@
++//===-- XtensaMCTargetDesc.h - Xtensa Target Descriptions -------*- C++ -*-===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file provides Xtensa specific target descriptions.
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCTARGETDESC_H
++#define LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCTARGETDESC_H
++
++#endif // LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCTARGETDESC_H
+diff --git a/llvm/lib/Target/Xtensa/TargetInfo/CMakeLists.txt b/llvm/lib/Target/Xtensa/TargetInfo/CMakeLists.txt
+new file mode 100644
+index 000000000000..94b4008d53bf
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/TargetInfo/CMakeLists.txt
+@@ -0,0 +1,10 @@
++add_llvm_component_library(LLVMXtensaInfo
++  XtensaTargetInfo.cpp
++
++  LINK_COMPONENTS
++  MC
++  Support
++
++  ADD_TO_COMPONENT
++  Xtensa
++  )
+diff --git a/llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.cpp b/llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.cpp
+new file mode 100644
+index 000000000000..2bed4c1505be
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.cpp
+@@ -0,0 +1,23 @@
++//===-- XtensaTargetInfo.cpp - Xtensa Target Implementation ---------------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "TargetInfo/XtensaTargetInfo.h"
++#include "llvm/MC/TargetRegistry.h"
++using namespace llvm;
++
++Target &llvm::getTheXtensaTarget() {
++  static Target TheXtensaTarget;
++  return TheXtensaTarget;
++}
++
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTargetInfo() {
++  RegisterTarget<Triple::xtensa> X(getTheXtensaTarget(), "xtensa", "Xtensa 32",
++                                   "XTENSA");
++}
+diff --git a/llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.h b/llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.h
+new file mode 100644
+index 000000000000..141ae67d3caa
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/TargetInfo/XtensaTargetInfo.h
+@@ -0,0 +1,20 @@
++//===-- XtensaTargetInfo.h - Xtensa Target Implementation -*- C++ -------*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_TARGETINFO_XTENSATARGETINFO_H
++#define LLVM_LIB_TARGET_XTENSA_TARGETINFO_XTENSATARGETINFO_H
++
++namespace llvm {
++
++class Target;
++
++Target &getTheXtensaTarget();
++
++} // end namespace llvm
++
++#endif // LLVM_LIB_TARGET_XTENSA_TARGETINFO_XTENSATARGETINFO_H
+diff --git a/llvm/lib/Target/Xtensa/XtensaTargetMachine.cpp b/llvm/lib/Target/Xtensa/XtensaTargetMachine.cpp
+new file mode 100644
+index 000000000000..31e63461176d
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/XtensaTargetMachine.cpp
+@@ -0,0 +1,71 @@
++//===- XtensaTargetMachine.cpp - Define TargetMachine for Xtensa ----------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// Implements the info about Xtensa target spec.
++//
++//===----------------------------------------------------------------------===//
++
++#include "XtensaTargetMachine.h"
++#include "TargetInfo/XtensaTargetInfo.h"
++#include "llvm/CodeGen/Passes.h"
++#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
++#include "llvm/CodeGen/TargetPassConfig.h"
++#include "llvm/IR/LegacyPassManager.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Transforms/IPO/PassManagerBuilder.h"
++#include "llvm/Transforms/Scalar.h"
++#include <optional>
++
++using namespace llvm;
++
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTarget() {
++  // Register the target.
++  RegisterTargetMachine<XtensaTargetMachine> A(getTheXtensaTarget());
++}
++
++static std::string computeDataLayout(const Triple &TT, StringRef CPU,
++                                     const TargetOptions &Options,
++                                     bool IsLittle) {
++  std::string Ret = "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32";
++  return Ret;
++}
++
++static Reloc::Model getEffectiveRelocModel(bool JIT,
++                                           std::optional<Reloc::Model> RM) {
++  if (!RM || JIT)
++     return Reloc::Static;
++  return *RM;
++}
++
++XtensaTargetMachine::XtensaTargetMachine(const Target &T, const Triple &TT,
++                                         StringRef CPU, StringRef FS,
++                                         const TargetOptions &Options,
++                                         std::optional<Reloc::Model> RM,
++                                         std::optional<CodeModel::Model> CM,
++                                         CodeGenOpt::Level OL, bool JIT,
++                                         bool IsLittle)
++    : LLVMTargetMachine(T, computeDataLayout(TT, CPU, Options, IsLittle), TT,
++                        CPU, FS, Options, getEffectiveRelocModel(JIT, RM),
++                        getEffectiveCodeModel(CM, CodeModel::Small), OL),
++      TLOF(std::make_unique<TargetLoweringObjectFileELF>()) {
++  initAsmInfo();
++}
++
++XtensaTargetMachine::XtensaTargetMachine(const Target &T, const Triple &TT,
++                                         StringRef CPU, StringRef FS,
++                                         const TargetOptions &Options,
++                                         std::optional<Reloc::Model> RM,
++                                         std::optional<CodeModel::Model> CM,
++                                         CodeGenOpt::Level OL, bool JIT)
++    : XtensaTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL, JIT, true) {}
++
++TargetPassConfig *XtensaTargetMachine::createPassConfig(PassManagerBase &PM) {
++  return new TargetPassConfig(*this, PM);
++}
+diff --git a/llvm/lib/Target/Xtensa/XtensaTargetMachine.h b/llvm/lib/Target/Xtensa/XtensaTargetMachine.h
+new file mode 100644
+index 000000000000..866ccdc1e85d
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/XtensaTargetMachine.h
+@@ -0,0 +1,46 @@
++//===-- XtensaTargetMachine.h - Define TargetMachine for Xtensa -*- C++ -*-===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file declares the Xtensa specific subclass of TargetMachine.
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_XTENSATARGETMACHINE_H
++#define LLVM_LIB_TARGET_XTENSA_XTENSATARGETMACHINE_H
++
++#include "llvm/Target/TargetMachine.h"
++#include <optional>
++
++namespace llvm {
++extern Target TheXtensaTarget;
++
++class XtensaTargetMachine : public LLVMTargetMachine {
++  std::unique_ptr<TargetLoweringObjectFile> TLOF;
++public:
++  XtensaTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
++                      StringRef FS, const TargetOptions &Options,
++                      std::optional<Reloc::Model> RM,
++                      std::optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
++                      bool JIT, bool isLittle);
++
++  XtensaTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
++                      StringRef FS, const TargetOptions &Options,
++                      std::optional<Reloc::Model> RM,
++                      std::optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
++                      bool JIT);
++
++  TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
++  TargetLoweringObjectFile *getObjFileLowering() const override {
++    return TLOF.get();
++  }
++};
++} // end namespace llvm
++
++#endif // LLVM_LIB_TARGET_XTENSA_XTENSATARGETMACHINE_H
+-- 
+2.34.1
+

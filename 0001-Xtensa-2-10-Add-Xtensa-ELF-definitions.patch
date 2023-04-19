@@ -1,0 +1,508 @@
+From 310f7652f7961fa8178937c7c928d7f629c8253a Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:39:46 +0100
+Subject: [PATCH] [Xtensa 2/10] Add Xtensa ELF definitions
+
+Add file with Xtensa ELF relocations. Add Xtensa support to ELF.h,
+ELFObject.h and ELFYAML.cpp. Add simple test of Xtensa ELF representation in YAML.
+
+Differential Revision: https://reviews.llvm.org/D64827
+---
+ llvm/include/llvm/BinaryFormat/ELF.h          |  15 ++
+ .../llvm/BinaryFormat/ELFRelocs/Xtensa.def    |  60 ++++++
+ llvm/include/llvm/Object/ELFObjectFile.h      |   5 +
+ llvm/include/llvm/module.modulemap            |   1 +
+ llvm/lib/Object/ELF.cpp                       |   7 +
+ llvm/lib/ObjectYAML/ELFYAML.cpp               |   8 +
+ llvm/test/Object/obj2yaml.test                |  21 +-
+ .../llvm-readobj/ELF/reloc-types-xtensa.test  | 182 ++++++++++++++++++
+ .../llvm-readobj/ELF/xtensa-header-flags.test |  20 ++
+ llvm/tools/llvm-readobj/ELFDumper.cpp         |  11 ++
+ llvm/unittests/Object/ELFObjectFileTest.cpp   |   8 +
+ 11 files changed, 337 insertions(+), 1 deletion(-)
+ create mode 100644 llvm/include/llvm/BinaryFormat/ELFRelocs/Xtensa.def
+ create mode 100644 llvm/test/tools/llvm-readobj/ELF/reloc-types-xtensa.test
+ create mode 100644 llvm/test/tools/llvm-readobj/ELF/xtensa-header-flags.test
+
+diff --git a/llvm/include/llvm/BinaryFormat/ELF.h b/llvm/include/llvm/BinaryFormat/ELF.h
+index bdeb68c27592..75f0c960beea 100644
+--- a/llvm/include/llvm/BinaryFormat/ELF.h
++++ b/llvm/include/llvm/BinaryFormat/ELF.h
+@@ -930,6 +930,21 @@ enum {
+ #include "ELFRelocs/LoongArch.def"
+ };
+ 
++// Xtensa specific e_flags
++enum : unsigned {
++  // Four-bit Xtensa machine type mask.
++  EF_XTENSA_MACH = 0x0000000f,
++  // Various CPU types.
++  EF_XTENSA_MACH_NONE = 0x00000000, // A base Xtensa implementation
++  EF_XTENSA_XT_INSN = 0x00000100,
++  EF_XTENSA_XT_LIT = 0x00000200,
++};
++
++// ELF Relocation types for Xtensa
++enum {
++#include "ELFRelocs/Xtensa.def"
++};
++
+ #undef ELF_RELOC
+ 
+ // Section header.
+diff --git a/llvm/include/llvm/BinaryFormat/ELFRelocs/Xtensa.def b/llvm/include/llvm/BinaryFormat/ELFRelocs/Xtensa.def
+new file mode 100644
+index 000000000000..6791a842181f
+--- /dev/null
++++ b/llvm/include/llvm/BinaryFormat/ELFRelocs/Xtensa.def
+@@ -0,0 +1,60 @@
++#ifndef ELF_RELOC
++#error "ELF_RELOC must be defined"
++#endif
++
++ELF_RELOC(R_XTENSA_NONE,              0)
++ELF_RELOC(R_XTENSA_32,                1)
++ELF_RELOC(R_XTENSA_RTLD,              2)
++ELF_RELOC(R_XTENSA_GLOB_DAT,          3)
++ELF_RELOC(R_XTENSA_JMP_SLOT,          4)
++ELF_RELOC(R_XTENSA_RELATIVE,          5)
++ELF_RELOC(R_XTENSA_PLT,               6)
++// RELOC '7' currently is not used.
++ELF_RELOC(R_XTENSA_OP0,               8)
++ELF_RELOC(R_XTENSA_OP1,               9)
++ELF_RELOC(R_XTENSA_OP2,              10)
++ELF_RELOC(R_XTENSA_ASM_EXPAND,       11)
++ELF_RELOC(R_XTENSA_ASM_SIMPLIFY,     12)
++ELF_RELOC(R_XTENSA_32_PCREL,         14)
++ELF_RELOC(R_XTENSA_GNU_VTINHERIT,    15)
++ELF_RELOC(R_XTENSA_GNU_VTENTRY,      16)
++ELF_RELOC(R_XTENSA_DIFF8,            17)
++ELF_RELOC(R_XTENSA_DIFF16,           18)
++ELF_RELOC(R_XTENSA_DIFF32,           19)
++ELF_RELOC(R_XTENSA_SLOT0_OP,         20)
++ELF_RELOC(R_XTENSA_SLOT1_OP,         21)
++ELF_RELOC(R_XTENSA_SLOT2_OP,         22)
++ELF_RELOC(R_XTENSA_SLOT3_OP,         23)
++ELF_RELOC(R_XTENSA_SLOT4_OP,         24)
++ELF_RELOC(R_XTENSA_SLOT5_OP,         25)
++ELF_RELOC(R_XTENSA_SLOT6_OP,         26)
++ELF_RELOC(R_XTENSA_SLOT7_OP,         27)
++ELF_RELOC(R_XTENSA_SLOT8_OP,         28)
++ELF_RELOC(R_XTENSA_SLOT9_OP,         29)
++ELF_RELOC(R_XTENSA_SLOT10_OP,        30)
++ELF_RELOC(R_XTENSA_SLOT11_OP,        31)
++ELF_RELOC(R_XTENSA_SLOT12_OP,        32)
++ELF_RELOC(R_XTENSA_SLOT13_OP,        33)
++ELF_RELOC(R_XTENSA_SLOT14_OP,        34)
++ELF_RELOC(R_XTENSA_SLOT0_ALT,        35)
++ELF_RELOC(R_XTENSA_SLOT1_ALT,        36)
++ELF_RELOC(R_XTENSA_SLOT2_ALT,        37)
++ELF_RELOC(R_XTENSA_SLOT3_ALT,        38)
++ELF_RELOC(R_XTENSA_SLOT4_ALT,        39)
++ELF_RELOC(R_XTENSA_SLOT5_ALT,        40)
++ELF_RELOC(R_XTENSA_SLOT6_ALT,        41)
++ELF_RELOC(R_XTENSA_SLOT7_ALT,        42)
++ELF_RELOC(R_XTENSA_SLOT8_ALT,        43)
++ELF_RELOC(R_XTENSA_SLOT9_ALT,        44)
++ELF_RELOC(R_XTENSA_SLOT10_ALT,       45)
++ELF_RELOC(R_XTENSA_SLOT11_ALT,       46)
++ELF_RELOC(R_XTENSA_SLOT12_ALT,       47)
++ELF_RELOC(R_XTENSA_SLOT13_ALT,       48)
++ELF_RELOC(R_XTENSA_SLOT14_ALT,       49)
++ELF_RELOC(R_XTENSA_TLSDESC_FN,       50)
++ELF_RELOC(R_XTENSA_TLSDESC_ARG,      51)
++ELF_RELOC(R_XTENSA_TLS_DTPOFF,       52)
++ELF_RELOC(R_XTENSA_TLS_TPOFF,        53)
++ELF_RELOC(R_XTENSA_TLS_FUNC,         54)
++ELF_RELOC(R_XTENSA_TLS_ARG,          55)
++ELF_RELOC(R_XTENSA_TLS_CALL,         56)
+diff --git a/llvm/include/llvm/Object/ELFObjectFile.h b/llvm/include/llvm/Object/ELFObjectFile.h
+index cbbec13f35c6..af026d2031aa 100644
+--- a/llvm/include/llvm/Object/ELFObjectFile.h
++++ b/llvm/include/llvm/Object/ELFObjectFile.h
+@@ -1217,6 +1217,8 @@ StringRef ELFObjectFile<ELFT>::getFileFormatName() const {
+       return "elf32-amdgpu";
+     case ELF::EM_LOONGARCH:
+       return "elf32-loongarch";
++    case ELF::EM_XTENSA:
++      return "elf32-xtensa";
+     default:
+       return "elf32-unknown";
+     }
+@@ -1341,6 +1343,9 @@ template <class ELFT> Triple::ArchType ELFObjectFile<ELFT>::getArch() const {
+       report_fatal_error("Invalid ELFCLASS!");
+     }
+ 
++  case ELF::EM_XTENSA:
++    return Triple::xtensa;
++
+   default:
+     return Triple::UnknownArch;
+   }
+diff --git a/llvm/include/llvm/module.modulemap b/llvm/include/llvm/module.modulemap
+index 07ac1cf87d95..4f9d1fbdd487 100644
+--- a/llvm/include/llvm/module.modulemap
++++ b/llvm/include/llvm/module.modulemap
+@@ -84,6 +84,7 @@ module LLVM_BinaryFormat {
+     textual header "BinaryFormat/ELFRelocs/SystemZ.def"
+     textual header "BinaryFormat/ELFRelocs/VE.def"
+     textual header "BinaryFormat/ELFRelocs/x86_64.def"
++    textual header "BinaryFormat/ELFRelocs/Xtensa.def"
+     textual header "BinaryFormat/WasmRelocs.def"
+     textual header "BinaryFormat/MsgPack.def"
+ }
+diff --git a/llvm/lib/Object/ELF.cpp b/llvm/lib/Object/ELF.cpp
+index 93d3476ac3e1..0ae080c9f3cc 100644
+--- a/llvm/lib/Object/ELF.cpp
++++ b/llvm/lib/Object/ELF.cpp
+@@ -173,6 +173,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
+       break;
+     }
+     break;
++  case ELF::EM_XTENSA:
++    switch (Type) {
++#include "llvm/BinaryFormat/ELFRelocs/Xtensa.def"
++    default:
++      break;
++    }
++    break;
+   default:
+     break;
+   }
+diff --git a/llvm/lib/ObjectYAML/ELFYAML.cpp b/llvm/lib/ObjectYAML/ELFYAML.cpp
+index 5513ce460dbc..abaa8a898440 100644
+--- a/llvm/lib/ObjectYAML/ELFYAML.cpp
++++ b/llvm/lib/ObjectYAML/ELFYAML.cpp
+@@ -541,6 +541,11 @@ void ScalarBitSetTraits<ELFYAML::ELF_EF>::bitset(IO &IO,
+     BCase(EF_RISCV_RVE);
+     BCase(EF_RISCV_TSO);
+     break;
++  case ELF::EM_XTENSA:
++    BCase(EF_XTENSA_XT_INSN);
++    BCaseMask(EF_XTENSA_MACH_NONE, EF_XTENSA_MACH);
++    BCase(EF_XTENSA_XT_LIT);
++    break;
+   case ELF::EM_AMDGPU:
+     BCaseMask(EF_AMDGPU_MACH_NONE, EF_AMDGPU_MACH);
+     BCaseMask(EF_AMDGPU_MACH_R600_R600, EF_AMDGPU_MACH);
+@@ -898,6 +903,9 @@ void ScalarEnumerationTraits<ELFYAML::ELF_REL>::enumeration(
+   case ELF::EM_LOONGARCH:
+ #include "llvm/BinaryFormat/ELFRelocs/LoongArch.def"
+     break;
++  case ELF::EM_XTENSA:
++#include "llvm/BinaryFormat/ELFRelocs/Xtensa.def"
++    break;
+   default:
+     // Nothing to do.
+     break;
+diff --git a/llvm/test/Object/obj2yaml.test b/llvm/test/Object/obj2yaml.test
+index 05860471e912..f07172595173 100644
+--- a/llvm/test/Object/obj2yaml.test
++++ b/llvm/test/Object/obj2yaml.test
+@@ -547,7 +547,7 @@
+ # ELF-MIPS64EL-NEXT:       Binding:         STB_GLOBAL
+ # ELF-MIPS64EL-NEXT: ...
+ 
+-# RUN: yaml2obj %s -o %t-x86-64
++# RUN: yaml2obj --docnum=1 %s -o %t-x86-64
+ # RUN: obj2yaml %t-x86-64 | FileCheck %s --check-prefix ELF-X86-64
+ 
+ # ELF-X86-64:      FileHeader:
+@@ -678,6 +678,25 @@ Symbols:
+   - Name:    puts
+     Binding: STB_GLOBAL
+ 
++# RUN: yaml2obj --docnum=2 %s -o %t-xtensa
++# RUN: obj2yaml %t-xtensa | FileCheck %s --check-prefix ELF-XTENSA
++
++# ELF-XTENSA:      FileHeader:
++# ELF-XTENSA-NEXT:   Class:           ELFCLASS32
++# ELF-XTENSA-NEXT:   Data:            ELFDATA2LSB
++# ELF-XTENSA-NEXT:   Type:            ET_EXEC
++# ELF-XTENSA-NEXT:   Machine:         EM_XTENSA
++## As EF_XTENSA_MACH_NONE == 0, it is always printed by obj2yaml.
++# ELF-XTENSA-NEXT:   Flags:           [ EF_XTENSA_XT_INSN, EF_XTENSA_MACH_NONE, EF_XTENSA_XT_LIT ]
++
++--- !ELF
++FileHeader:
++  Class:           ELFCLASS32
++  Data:            ELFDATA2LSB
++  Type:            ET_EXEC
++  Machine:         EM_XTENSA
++  Flags:           [ EF_XTENSA_XT_INSN, EF_XTENSA_XT_LIT ]
++
+ # RUN: obj2yaml %p/Inputs/trivial-object-test.elf-avr | FileCheck %s --check-prefix ELF-AVR
+ 
+ # ELF-AVR:      FileHeader:
+diff --git a/llvm/test/tools/llvm-readobj/ELF/reloc-types-xtensa.test b/llvm/test/tools/llvm-readobj/ELF/reloc-types-xtensa.test
+new file mode 100644
+index 000000000000..0356e4f53d48
+--- /dev/null
++++ b/llvm/test/tools/llvm-readobj/ELF/reloc-types-xtensa.test
+@@ -0,0 +1,182 @@
++## Test that llvm-readobj shows proper relocation type
++## names and values for the Xtensa target.
++
++# RUN: yaml2obj %s -o %t-xtensa.o
++# RUN: llvm-readobj -r %t-xtensa.o | FileCheck %s
++
++# CHECK:      0x0 R_XTENSA_NONE - 0x0
++# CHECK-NEXT: 0x4 R_XTENSA_32 - 0x0
++# CHECK-NEXT: 0x8 R_XTENSA_RTLD - 0x0
++# CHECK-NEXT: 0xC R_XTENSA_GLOB_DAT - 0x0
++# CHECK-NEXT: 0x10 R_XTENSA_JMP_SLOT - 0x0
++# CHECK-NEXT: 0x14 R_XTENSA_RELATIVE - 0x0
++# CHECK-NEXT: 0x18 R_XTENSA_PLT - 0x0
++# CHECK-NEXT: 0x1C R_XTENSA_OP0 - 0x0
++# CHECK-NEXT: 0x20 R_XTENSA_OP1 - 0x0
++# CHECK-NEXT: 0x24 R_XTENSA_OP2 - 0x0
++# CHECK-NEXT: 0x28 R_XTENSA_ASM_EXPAND - 0x0
++# CHECK-NEXT: 0x2C R_XTENSA_ASM_SIMPLIFY - 0x0
++# CHECK-NEXT: 0x30 R_XTENSA_32_PCREL - 0x0
++# CHECK-NEXT: 0x34 R_XTENSA_GNU_VTINHERIT - 0x0
++# CHECK-NEXT: 0x38 R_XTENSA_GNU_VTENTRY - 0x0
++# CHECK-NEXT: 0x3C R_XTENSA_DIFF8 - 0x0
++# CHECK-NEXT: 0x40 R_XTENSA_DIFF16 - 0x0
++# CHECK-NEXT: 0x44 R_XTENSA_DIFF32 - 0x0
++# CHECK-NEXT: 0x48 R_XTENSA_SLOT0_OP - 0x0
++# CHECK-NEXT: 0x4C R_XTENSA_SLOT1_OP - 0x0
++# CHECK-NEXT: 0x50 R_XTENSA_SLOT2_OP - 0x0
++# CHECK-NEXT: 0x54 R_XTENSA_SLOT3_OP - 0x0
++# CHECK-NEXT: 0x58 R_XTENSA_SLOT4_OP - 0x0
++# CHECK-NEXT: 0x5C R_XTENSA_SLOT5_OP - 0x0
++# CHECK-NEXT: 0x60 R_XTENSA_SLOT6_OP - 0x0
++# CHECK-NEXT: 0x64 R_XTENSA_SLOT7_OP - 0x0
++# CHECK-NEXT: 0x68 R_XTENSA_SLOT8_OP - 0x0
++# CHECK-NEXT: 0x6C R_XTENSA_SLOT9_OP - 0x0
++# CHECK-NEXT: 0x70 R_XTENSA_SLOT10_OP - 0x0
++# CHECK-NEXT: 0x74 R_XTENSA_SLOT11_OP - 0x0
++# CHECK-NEXT: 0x78 R_XTENSA_SLOT12_OP - 0x0
++# CHECK-NEXT: 0x7C R_XTENSA_SLOT13_OP - 0x0
++# CHECK-NEXT: 0x80 R_XTENSA_SLOT14_OP - 0x0
++# CHECK-NEXT: 0x84 R_XTENSA_SLOT0_ALT - 0x0
++# CHECK-NEXT: 0x88 R_XTENSA_SLOT1_ALT - 0x0
++# CHECK-NEXT: 0x8C R_XTENSA_SLOT2_ALT - 0x0
++# CHECK-NEXT: 0x90 R_XTENSA_SLOT3_ALT - 0x0
++# CHECK-NEXT: 0x94 R_XTENSA_SLOT4_ALT - 0x0
++# CHECK-NEXT: 0x98 R_XTENSA_SLOT5_ALT - 0x0
++# CHECK-NEXT: 0x9C R_XTENSA_SLOT6_ALT - 0x0
++# CHECK-NEXT: 0xA0 R_XTENSA_SLOT7_ALT - 0x0
++# CHECK-NEXT: 0xA4 R_XTENSA_SLOT8_ALT - 0x0
++# CHECK-NEXT: 0xA8 R_XTENSA_SLOT9_ALT - 0x0
++# CHECK-NEXT: 0xAC R_XTENSA_SLOT10_ALT - 0x0
++# CHECK-NEXT: 0xB0 R_XTENSA_SLOT11_ALT - 0x0
++# CHECK-NEXT: 0xB4 R_XTENSA_SLOT12_ALT - 0x0
++# CHECK-NEXT: 0xB8 R_XTENSA_SLOT13_ALT - 0x0
++# CHECK-NEXT: 0xBC R_XTENSA_SLOT14_ALT - 0x0
++# CHECK-NEXT: 0xC0 R_XTENSA_TLSDESC_FN - 0x0
++# CHECK-NEXT: 0xC4 R_XTENSA_TLSDESC_ARG - 0x0
++# CHECK-NEXT: 0xC8 R_XTENSA_TLS_DTPOFF - 0x0
++# CHECK-NEXT: 0xCC R_XTENSA_TLS_TPOFF - 0x0
++# CHECK-NEXT: 0xD0 R_XTENSA_TLS_FUNC - 0x0
++# CHECK-NEXT: 0xD4 R_XTENSA_TLS_ARG - 0x0
++# CHECK-NEXT: 0xD8 R_XTENSA_TLS_CALL - 0x0
++
++--- !ELF
++FileHeader:
++  Class:   ELFCLASS32
++  Data:    ELFDATA2LSB
++  Type:    ET_REL
++  Machine: EM_XTENSA
++Sections:
++  - Name:         .rela.text
++    Type:         SHT_RELA
++    Relocations:
++       - Offset: 0x0000000000000000
++         Type:   R_XTENSA_NONE
++       - Offset: 0x0000000000000004
++         Type:   R_XTENSA_32
++       - Offset: 0x0000000000000008
++         Type:   R_XTENSA_RTLD
++       - Offset: 0x000000000000000C
++         Type:   R_XTENSA_GLOB_DAT
++       - Offset: 0x0000000000000010
++         Type:   R_XTENSA_JMP_SLOT
++       - Offset: 0x0000000000000014
++         Type:   R_XTENSA_RELATIVE
++       - Offset: 0x0000000000000018
++         Type:   R_XTENSA_PLT
++       - Offset: 0x000000000000001C
++         Type:   R_XTENSA_OP0
++       - Offset: 0x0000000000000020
++         Type:   R_XTENSA_OP1
++       - Offset: 0x0000000000000024
++         Type:   R_XTENSA_OP2
++       - Offset: 0x0000000000000028
++         Type:   R_XTENSA_ASM_EXPAND
++       - Offset: 0x000000000000002C
++         Type:   R_XTENSA_ASM_SIMPLIFY
++       - Offset: 0x0000000000000030
++         Type:   R_XTENSA_32_PCREL
++       - Offset: 0x0000000000000034
++         Type:   R_XTENSA_GNU_VTINHERIT
++       - Offset: 0x0000000000000038
++         Type:   R_XTENSA_GNU_VTENTRY
++       - Offset: 0x000000000000003C
++         Type:   R_XTENSA_DIFF8
++       - Offset: 0x0000000000000040
++         Type:   R_XTENSA_DIFF16
++       - Offset: 0x0000000000000044
++         Type:   R_XTENSA_DIFF32
++       - Offset: 0x0000000000000048
++         Type:   R_XTENSA_SLOT0_OP
++       - Offset: 0x000000000000004C
++         Type:   R_XTENSA_SLOT1_OP
++       - Offset: 0x0000000000000050
++         Type:   R_XTENSA_SLOT2_OP
++       - Offset: 0x0000000000000054
++         Type:   R_XTENSA_SLOT3_OP
++       - Offset: 0x0000000000000058
++         Type:   R_XTENSA_SLOT4_OP
++       - Offset: 0x000000000000005C
++         Type:   R_XTENSA_SLOT5_OP
++       - Offset: 0x0000000000000060
++         Type:   R_XTENSA_SLOT6_OP
++       - Offset: 0x0000000000000064
++         Type:   R_XTENSA_SLOT7_OP
++       - Offset: 0x0000000000000068
++         Type:   R_XTENSA_SLOT8_OP
++       - Offset: 0x000000000000006C
++         Type:   R_XTENSA_SLOT9_OP
++       - Offset: 0x0000000000000070
++         Type:   R_XTENSA_SLOT10_OP
++       - Offset: 0x0000000000000074
++         Type:   R_XTENSA_SLOT11_OP
++       - Offset: 0x0000000000000078
++         Type:   R_XTENSA_SLOT12_OP
++       - Offset: 0x000000000000007C
++         Type:   R_XTENSA_SLOT13_OP
++       - Offset: 0x0000000000000080
++         Type:   R_XTENSA_SLOT14_OP
++       - Offset: 0x0000000000000084
++         Type:   R_XTENSA_SLOT0_ALT
++       - Offset: 0x0000000000000088
++         Type:   R_XTENSA_SLOT1_ALT
++       - Offset: 0x000000000000008C
++         Type:   R_XTENSA_SLOT2_ALT
++       - Offset: 0x0000000000000090
++         Type:   R_XTENSA_SLOT3_ALT
++       - Offset: 0x0000000000000094
++         Type:   R_XTENSA_SLOT4_ALT
++       - Offset: 0x0000000000000098
++         Type:   R_XTENSA_SLOT5_ALT
++       - Offset: 0x000000000000009C
++         Type:   R_XTENSA_SLOT6_ALT
++       - Offset: 0x00000000000000A0
++         Type:   R_XTENSA_SLOT7_ALT
++       - Offset: 0x00000000000000A4
++         Type:   R_XTENSA_SLOT8_ALT
++       - Offset: 0x00000000000000A8
++         Type:   R_XTENSA_SLOT9_ALT
++       - Offset: 0x00000000000000AC
++         Type:   R_XTENSA_SLOT10_ALT
++       - Offset: 0x00000000000000B0
++         Type:   R_XTENSA_SLOT11_ALT
++       - Offset: 0x00000000000000B4
++         Type:   R_XTENSA_SLOT12_ALT
++       - Offset: 0x00000000000000B8
++         Type:   R_XTENSA_SLOT13_ALT
++       - Offset: 0x00000000000000BC
++         Type:   R_XTENSA_SLOT14_ALT
++       - Offset: 0x00000000000000C0
++         Type:   R_XTENSA_TLSDESC_FN
++       - Offset: 0x00000000000000C4
++         Type:   R_XTENSA_TLSDESC_ARG
++       - Offset: 0x00000000000000C8
++         Type:   R_XTENSA_TLS_DTPOFF
++       - Offset: 0x00000000000000CC
++         Type:   R_XTENSA_TLS_TPOFF
++       - Offset: 0x00000000000000D0
++         Type:   R_XTENSA_TLS_FUNC
++       - Offset: 0x00000000000000D4
++         Type:   R_XTENSA_TLS_ARG
++       - Offset: 0x00000000000000D8
++         Type:   R_XTENSA_TLS_CALL
+diff --git a/llvm/test/tools/llvm-readobj/ELF/xtensa-header-flags.test b/llvm/test/tools/llvm-readobj/ELF/xtensa-header-flags.test
+new file mode 100644
+index 000000000000..a7934370940e
+--- /dev/null
++++ b/llvm/test/tools/llvm-readobj/ELF/xtensa-header-flags.test
+@@ -0,0 +1,20 @@
++## Check that we are able to dump EF_XTENSA_XT_* flags correctly
++
++# RUN: yaml2obj %s -o %t.insn -DFLAG=INSN
++# RUN: llvm-readobj -S --file-headers %t.insn | FileCheck --check-prefixes=ALL,INSN %s
++
++# RUN: yaml2obj %s -o %t.lit -DFLAG=LIT
++# RUN: llvm-readobj -S --file-headers %t.lit | FileCheck --check-prefixes=ALL,LIT %s
++
++# ALL:  Flags [
++# INSN:   EF_XTENSA_XT_INSN (0x100)
++# LIT:    EF_XTENSA_XT_LIT  (0x200)
++# ALL:  ]
++
++--- !ELF
++FileHeader:
++  Class:   ELFCLASS32
++  Data:    ELFDATA2LSB
++  Type:    ET_EXEC
++  Machine: EM_XTENSA
++  Flags:   [ EF_XTENSA_XT_[[FLAG]] ]
+diff --git a/llvm/tools/llvm-readobj/ELFDumper.cpp b/llvm/tools/llvm-readobj/ELFDumper.cpp
+index f9f51bc68332..05393c3b03a6 100644
+--- a/llvm/tools/llvm-readobj/ELFDumper.cpp
++++ b/llvm/tools/llvm-readobj/ELFDumper.cpp
+@@ -1655,6 +1655,11 @@ const EnumEntry<unsigned> ElfHeaderLoongArchFlags[] = {
+   ENUM_ENT(EF_LOONGARCH_OBJABI_V1, "OBJ-v1"),
+ };
+ 
++static const EnumEntry<unsigned> ElfHeaderXtensaFlags[] = {
++  LLVM_READOBJ_ENUM_ENT(ELF, EF_XTENSA_MACH_NONE),
++  LLVM_READOBJ_ENUM_ENT(ELF, EF_XTENSA_XT_INSN),
++  LLVM_READOBJ_ENUM_ENT(ELF, EF_XTENSA_XT_LIT)
++};
+ 
+ const EnumEntry<unsigned> ElfSymOtherFlags[] = {
+   LLVM_READOBJ_ENUM_ENT(ELF, STV_INTERNAL),
+@@ -3368,6 +3373,9 @@ template <class ELFT> void GNUELFDumper<ELFT>::printFileHeaders() {
+     ElfFlags = printFlags(e.e_flags, makeArrayRef(ElfHeaderLoongArchFlags),
+                           unsigned(ELF::EF_LOONGARCH_ABI_MODIFIER_MASK),
+                           unsigned(ELF::EF_LOONGARCH_OBJABI_MASK));
++  else if (e.e_machine == EM_XTENSA)
++    ElfFlags = printFlags(e.e_flags, makeArrayRef(ElfHeaderXtensaFlags),
++                          unsigned(ELF::EF_XTENSA_MACH));
+   Str = "0x" + utohexstr(e.e_flags);
+   if (!ElfFlags.empty())
+     Str = Str + ", " + ElfFlags;
+@@ -6571,6 +6579,9 @@ template <class ELFT> void LLVMELFDumper<ELFT>::printFileHeaders() {
+       W.printFlags("Flags", E.e_flags, makeArrayRef(ElfHeaderLoongArchFlags),
+                    unsigned(ELF::EF_LOONGARCH_ABI_MODIFIER_MASK),
+                    unsigned(ELF::EF_LOONGARCH_OBJABI_MASK));
++    else if (E.e_machine == EM_XTENSA)
++      W.printFlags("Flags", E.e_flags, makeArrayRef(ElfHeaderXtensaFlags),
++                   unsigned(ELF::EF_XTENSA_MACH));
+     else
+       W.printFlags("Flags", E.e_flags);
+     W.printNumber("HeaderSize", E.e_ehsize);
+diff --git a/llvm/unittests/Object/ELFObjectFileTest.cpp b/llvm/unittests/Object/ELFObjectFileTest.cpp
+index 2591a70b3d58..577cec5152e5 100644
+--- a/llvm/unittests/Object/ELFObjectFileTest.cpp
++++ b/llvm/unittests/Object/ELFObjectFileTest.cpp
+@@ -310,6 +310,14 @@ TEST(ELFObjectFileTest, MachineTestForCSKY) {
+     checkFormatAndArch(D, Formats[I++], Triple::csky);
+ }
+ 
++TEST(ELFObjectFileTest, MachineTestForXtensa) {
++  std::array<StringRef, 4> Formats = {"elf32-xtensa", "elf32-xtensa",
++                                      "elf64-unknown", "elf64-unknown"};
++  size_t I = 0;
++  for (const DataForTest &D : generateData(ELF::EM_XTENSA))
++    checkFormatAndArch(D, Formats[I++], Triple::xtensa);
++}
++
+ // ELF relative relocation type test.
+ TEST(ELFObjectFileTest, RelativeRelocationTypeTest) {
+   EXPECT_EQ(ELF::R_CKCORE_RELATIVE, getELFRelativeRelocationType(ELF::EM_CSKY));
+-- 
+2.34.1
+

@@ -1,0 +1,178 @@
+From 8c618e8f53b166818e4465405fae676efb4cb1b2 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:37:28 +0100
+Subject: [PATCH] [Xtensa 1/10] Recognize Xtensa in triple parsing code
+
+I'm sharing initial set of patches that adds LLVM backend for Xtensa architecture.
+It is based on this LLVM fork https://github.com/espressif/llvm-xtensa.
+I prepared patches by similar way like it was already successfully done for RISCV, i.e. incrementally add an initial MC layer for Xtensa by small chunks which could be reviewable.
+
+Differential Revision: https://reviews.llvm.org/D64826
+---
+ llvm/CODE_OWNERS.TXT                       |  4 ++++
+ llvm/include/llvm/TargetParser/Triple.h    |  1 +
+ llvm/lib/TargetParser/Triple.cpp           | 11 +++++++++++
+ llvm/unittests/TargetParser/TripleTest.cpp | 21 +++++++++++++++++++++
+ 4 files changed, 37 insertions(+)
+
+diff --git a/llvm/CODE_OWNERS.TXT b/llvm/CODE_OWNERS.TXT
+index c6ac488c4c54..64e646dc10fa 100644
+--- a/llvm/CODE_OWNERS.TXT
++++ b/llvm/CODE_OWNERS.TXT
+@@ -201,6 +201,10 @@ N: Chad Rosier
+ E: mcrosier@codeaurora.org
+ D: Fast-Isel
+ 
++N: Andrei Safronov
++E: andrei.safronov@espressif.com
++D: Xtensa backend (lib/Target/Xtensa/*)
++
+ N: Duncan Sands
+ E: baldrick@free.fr
+ D: DragonEgg
+diff --git a/llvm/include/llvm/TargetParser/Triple.h b/llvm/include/llvm/TargetParser/Triple.h
+index c8046abac6cd..3db4194de07b 100644
+--- a/llvm/include/llvm/TargetParser/Triple.h
++++ b/llvm/include/llvm/TargetParser/Triple.h
+@@ -85,6 +85,7 @@ public:
+     x86,            // X86: i[3-9]86
+     x86_64,         // X86-64: amd64, x86_64
+     xcore,          // XCore: xcore
++    xtensa,         // Tensilica: Xtensa
+     nvptx,          // NVPTX: 32-bit
+     nvptx64,        // NVPTX: 64-bit
+     le32,           // le32: generic little-endian 32-bit CPU (PNaCl)
+diff --git a/llvm/lib/TargetParser/Triple.cpp b/llvm/lib/TargetParser/Triple.cpp
+index b3fddc147f61..a68035989a93 100644
+--- a/llvm/lib/TargetParser/Triple.cpp
++++ b/llvm/lib/TargetParser/Triple.cpp
+@@ -83,6 +83,7 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
+   case x86:            return "i386";
+   case x86_64:         return "x86_64";
+   case xcore:          return "xcore";
++  case xtensa:         return "xtensa";
+   }
+ 
+   llvm_unreachable("Invalid ArchType!");
+@@ -172,6 +173,8 @@ StringRef Triple::getArchTypePrefix(ArchType Kind) {
+   case loongarch64: return "loongarch";
+ 
+   case dxil:        return "dx";
++
++  case xtensa:      return "xtensa";
+   }
+ }
+ 
+@@ -374,6 +377,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
+     .Case("loongarch32", loongarch32)
+     .Case("loongarch64", loongarch64)
+     .Case("dxil", dxil)
++    .Case("xtensa", xtensa)
+     .Default(UnknownArch);
+ }
+ 
+@@ -515,6 +519,7 @@ static Triple::ArchType parseArch(StringRef ArchName) {
+     .Case("loongarch32", Triple::loongarch32)
+     .Case("loongarch64", Triple::loongarch64)
+     .Case("dxil", Triple::dxil)
++    .Case("xtensa", Triple::xtensa)
+     .Default(Triple::UnknownArch);
+ 
+   // Some architectures require special parsing logic just to compute the
+@@ -849,6 +854,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
+   case Triple::thumbeb:
+   case Triple::ve:
+   case Triple::xcore:
++  case Triple::xtensa:
+     return Triple::ELF;
+ 
+   case Triple::ppc64:
+@@ -1429,6 +1435,7 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
+   case llvm::Triple::wasm32:
+   case llvm::Triple::x86:
+   case llvm::Triple::xcore:
++  case llvm::Triple::xtensa:
+     return 32;
+ 
+   case llvm::Triple::aarch64:
+@@ -1519,6 +1526,7 @@ Triple Triple::get32BitArchVariant() const {
+   case Triple::wasm32:
+   case Triple::x86:
+   case Triple::xcore:
++  case Triple::xtensa:
+     // Already 32-bit.
+     break;
+ 
+@@ -1569,6 +1577,7 @@ Triple Triple::get64BitArchVariant() const {
+   case Triple::tce:
+   case Triple::tcele:
+   case Triple::xcore:
++  case Triple::xtensa:
+     T.setArch(UnknownArch);
+     break;
+ 
+@@ -1669,6 +1678,7 @@ Triple Triple::getBigEndianArchVariant() const {
+   case Triple::xcore:
+   case Triple::ve:
+   case Triple::csky:
++  case Triple::xtensa:
+ 
+   // ARM is intentionally unsupported here, changing the architecture would
+   // drop any arch suffixes.
+@@ -1778,6 +1788,7 @@ bool Triple::isLittleEndian() const {
+   case Triple::x86:
+   case Triple::x86_64:
+   case Triple::xcore:
++  case Triple::xtensa:
+     return true;
+   default:
+     return false;
+diff --git a/llvm/unittests/TargetParser/TripleTest.cpp b/llvm/unittests/TargetParser/TripleTest.cpp
+index 5039758cde7d..77de43a16d0a 100644
+--- a/llvm/unittests/TargetParser/TripleTest.cpp
++++ b/llvm/unittests/TargetParser/TripleTest.cpp
+@@ -864,6 +864,18 @@ TEST(TripleTest, ParsedIDs) {
+   EXPECT_EQ(Triple::Amplification, T.getEnvironment());
+   EXPECT_FALSE(T.supportsCOMDAT());
+ 
++  T = Triple("xtensa");
++  EXPECT_EQ(Triple::xtensa, T.getArch());
++  EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
++  EXPECT_EQ(Triple::UnknownOS, T.getOS());
++  EXPECT_EQ(Triple::UnknownEnvironment, T.getEnvironment());
++
++  T = Triple("xtensa-unknown-unknown");
++  EXPECT_EQ(Triple::xtensa, T.getArch());
++  EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
++  EXPECT_EQ(Triple::UnknownOS, T.getOS());
++  EXPECT_EQ(Triple::UnknownEnvironment, T.getEnvironment());
++
+   T = Triple("huh");
+   EXPECT_EQ(Triple::UnknownArch, T.getArch());
+ }
+@@ -1225,6 +1237,11 @@ TEST(TripleTest, BitWidthPredicates) {
+   EXPECT_TRUE(T.isArch32Bit());
+   EXPECT_FALSE(T.isArch64Bit());
+   EXPECT_TRUE(T.isDXIL());
++
++  T.setArch(Triple::xtensa);
++  EXPECT_FALSE(T.isArch16Bit());
++  EXPECT_TRUE(T.isArch32Bit());
++  EXPECT_FALSE(T.isArch64Bit());
+ }
+ 
+ TEST(TripleTest, BitWidthArchVariants) {
+@@ -1419,6 +1436,10 @@ TEST(TripleTest, BitWidthArchVariants) {
+   T.setArch(Triple::dxil);
+   EXPECT_EQ(Triple::dxil, T.get32BitArchVariant().getArch());
+   EXPECT_EQ(Triple::UnknownArch, T.get64BitArchVariant().getArch());
++
++  T.setArch(Triple::xtensa);
++  EXPECT_EQ(Triple::xtensa, T.get32BitArchVariant().getArch());
++  EXPECT_EQ(Triple::UnknownArch, T.get64BitArchVariant().getArch());
+ }
+ 
+ TEST(TripleTest, EndianArchVariants) {
+-- 
+2.34.1
+

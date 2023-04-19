@@ -1,0 +1,356 @@
+From 71199af14c578a72a5c0fec6ecaa5eab1645a7b7 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:58:36 +0100
+Subject: [PATCH] [Xtensa 9/10] Add basic support of Xtensa disassembler
+
+Differential Revision: https://reviews.llvm.org/D64835
+---
+ llvm/lib/Target/Xtensa/CMakeLists.txt         |   2 +
+ .../Target/Xtensa/Disassembler/CMakeLists.txt |  11 +
+ .../Disassembler/XtensaDisassembler.cpp       | 207 ++++++++++++++++++
+ llvm/lib/Target/Xtensa/XtensaOperands.td      |  24 +-
+ 4 files changed, 240 insertions(+), 4 deletions(-)
+ create mode 100644 llvm/lib/Target/Xtensa/Disassembler/CMakeLists.txt
+ create mode 100644 llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp
+
+diff --git a/llvm/lib/Target/Xtensa/CMakeLists.txt b/llvm/lib/Target/Xtensa/CMakeLists.txt
+index 62731a2cce34..7192f7392072 100644
+--- a/llvm/lib/Target/Xtensa/CMakeLists.txt
++++ b/llvm/lib/Target/Xtensa/CMakeLists.txt
+@@ -4,6 +4,7 @@ set(LLVM_TARGET_DEFINITIONS Xtensa.td)
+ 
+ tablegen(LLVM XtensaGenAsmMatcher.inc -gen-asm-matcher)
+ tablegen(LLVM XtensaGenAsmWriter.inc -gen-asm-writer)
++tablegen(LLVM XtensaGenDisassemblerTables.inc -gen-disassembler)
+ tablegen(LLVM XtensaGenInstrInfo.inc -gen-instr-info)
+ tablegen(LLVM XtensaGenMCCodeEmitter.inc -gen-emitter)
+ tablegen(LLVM XtensaGenRegisterInfo.inc -gen-register-info)
+@@ -29,6 +30,7 @@ add_llvm_target(XtensaCodeGen
+   )
+ 
+ add_subdirectory(AsmParser)
++add_subdirectory(Disassembler)
+ add_subdirectory(MCTargetDesc)
+ add_subdirectory(TargetInfo)
+ 
+diff --git a/llvm/lib/Target/Xtensa/Disassembler/CMakeLists.txt b/llvm/lib/Target/Xtensa/Disassembler/CMakeLists.txt
+new file mode 100644
+index 000000000000..43f235b7cd31
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/Disassembler/CMakeLists.txt
+@@ -0,0 +1,11 @@
++add_llvm_component_library(LLVMXtensaDisassembler
++  XtensaDisassembler.cpp
++
++  LINK_COMPONENTS
++  MCDisassembler
++  Support
++  XtensaInfo
++
++  ADD_TO_COMPONENT
++  Xtensa
++  )
+diff --git a/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp b/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp
+new file mode 100644
+index 000000000000..dfa677789d1a
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp
+@@ -0,0 +1,207 @@
++//===-- XtensaDisassembler.cpp - Disassembler for Xtensa ------------------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file implements the XtensaDisassembler class.
++//
++//===----------------------------------------------------------------------===//
++
++#include "MCTargetDesc/XtensaMCTargetDesc.h"
++#include "TargetInfo/XtensaTargetInfo.h"
++#include "llvm/MC/MCContext.h"
++#include "llvm/MC/MCDecoderOps.h"
++#include "llvm/MC/MCDisassembler/MCDisassembler.h"
++#include "llvm/MC/MCInst.h"
++#include "llvm/MC/MCRegisterInfo.h"
++#include "llvm/MC/MCSubtargetInfo.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/Endian.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "Xtensa-disassembler"
++
++using DecodeStatus = MCDisassembler::DecodeStatus;
++
++namespace {
++
++class XtensaDisassembler : public MCDisassembler {
++  bool IsLittleEndian;
++
++public:
++  XtensaDisassembler(const MCSubtargetInfo &STI, MCContext &Ctx, bool isLE)
++      : MCDisassembler(STI, Ctx), IsLittleEndian(isLE) {}
++
++  bool hasDensity() const {
++    return STI.getFeatureBits()[Xtensa::FeatureDensity];
++  }
++
++  DecodeStatus getInstruction(MCInst &Instr, uint64_t &Size,
++                              ArrayRef<uint8_t> Bytes, uint64_t Address,
++                              raw_ostream &CStream) const override;
++};
++} // end anonymous namespace
++
++static MCDisassembler *createXtensaDisassembler(const Target &T,
++                                                const MCSubtargetInfo &STI,
++                                                MCContext &Ctx) {
++  return new XtensaDisassembler(STI, Ctx, true);
++}
++
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaDisassembler() {
++  TargetRegistry::RegisterMCDisassembler(getTheXtensaTarget(),
++                                         createXtensaDisassembler);
++}
++
++static const unsigned ARDecoderTable[] = {
++    Xtensa::A0,  Xtensa::SP,  Xtensa::A2,  Xtensa::A3, Xtensa::A4,  Xtensa::A5,
++    Xtensa::A6,  Xtensa::A7,  Xtensa::A8,  Xtensa::A9, Xtensa::A10, Xtensa::A11,
++    Xtensa::A12, Xtensa::A13, Xtensa::A14, Xtensa::A15};
++
++static DecodeStatus DecodeARRegisterClass(MCInst &Inst, uint64_t RegNo,
++                                          uint64_t Address,
++                                          const void *Decoder) {
++  if (RegNo >= std::size(ARDecoderTable))
++    return MCDisassembler::Fail;
++
++  unsigned Reg = ARDecoderTable[RegNo];
++  Inst.addOperand(MCOperand::createReg(Reg));
++  return MCDisassembler::Success;
++}
++
++static const unsigned SRDecoderTable[] = {Xtensa::SAR, 3};
++
++static DecodeStatus DecodeSRRegisterClass(MCInst &Inst, uint64_t RegNo,
++                                          uint64_t Address,
++                                          const void *Decoder) {
++  if (RegNo > 255)
++    return MCDisassembler::Fail;
++
++  for (unsigned i = 0; i < std::size(SRDecoderTable); i += 2) {
++    if (SRDecoderTable[i + 1] == RegNo) {
++      unsigned Reg = SRDecoderTable[i];
++      Inst.addOperand(MCOperand::createReg(Reg));
++      return MCDisassembler::Success;
++    }
++  }
++
++  return MCDisassembler::Fail;
++}
++
++static DecodeStatus decodeImm8Operand(MCInst &Inst, uint64_t Imm,
++                                      int64_t Address, const void *Decoder) {
++  assert(isUInt<8>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(SignExtend64<8>(Imm)));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeImm8_sh8Operand(MCInst &Inst, uint64_t Imm,
++                                          int64_t Address,
++                                          const void *Decoder) {
++  assert(isUInt<8>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(SignExtend64<16>(Imm << 8)));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeImm12Operand(MCInst &Inst, uint64_t Imm,
++                                       int64_t Address, const void *Decoder) {
++  assert(isUInt<12>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(SignExtend64<12>(Imm)));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeUimm4Operand(MCInst &Inst, uint64_t Imm,
++                                       int64_t Address, const void *Decoder) {
++  assert(isUInt<4>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(Imm));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeUimm5Operand(MCInst &Inst, uint64_t Imm,
++                                       int64_t Address, const void *Decoder) {
++  assert(isUInt<5>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(Imm));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeImm1_16Operand(MCInst &Inst, uint64_t Imm,
++                                         int64_t Address, const void *Decoder) {
++  assert(isUInt<4>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(Imm + 1));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeShimm1_31Operand(MCInst &Inst, uint64_t Imm,
++                                           int64_t Address,
++                                           const void *Decoder) {
++  assert(isUInt<5>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(32 - Imm));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeMem8Operand(MCInst &Inst, uint64_t Imm,
++                                      int64_t Address, const void *Decoder) {
++  assert(isUInt<12>(Imm) && "Invalid immediate");
++  DecodeARRegisterClass(Inst, Imm & 0xf, Address, Decoder);
++  Inst.addOperand(MCOperand::createImm((Imm >> 4) & 0xff));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeMem16Operand(MCInst &Inst, uint64_t Imm,
++                                       int64_t Address, const void *Decoder) {
++  assert(isUInt<12>(Imm) && "Invalid immediate");
++  DecodeARRegisterClass(Inst, Imm & 0xf, Address, Decoder);
++  Inst.addOperand(MCOperand::createImm((Imm >> 3) & 0x1fe));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeMem32Operand(MCInst &Inst, uint64_t Imm,
++                                       int64_t Address, const void *Decoder) {
++  assert(isUInt<12>(Imm) && "Invalid immediate");
++  DecodeARRegisterClass(Inst, Imm & 0xf, Address, Decoder);
++  Inst.addOperand(MCOperand::createImm((Imm >> 2) & 0x3fc));
++  return MCDisassembler::Success;
++}
++
++/// Read three bytes from the ArrayRef and return 24 bit data
++static DecodeStatus readInstruction24(ArrayRef<uint8_t> Bytes, uint64_t Address,
++                                      uint64_t &Size, uint32_t &Insn,
++                                      bool IsLittleEndian) {
++  // We want to read exactly 3 Bytes of data.
++  if (Bytes.size() < 3) {
++    Size = 0;
++    return MCDisassembler::Fail;
++  }
++
++  if (!IsLittleEndian) {
++    report_fatal_error("Big-endian mode currently is not supported!");
++  } else {
++    Insn = (Bytes[2] << 16) | (Bytes[1] << 8) | (Bytes[0] << 0);
++  }
++
++  Size = 3;
++  return MCDisassembler::Success;
++}
++
++#include "XtensaGenDisassemblerTables.inc"
++
++DecodeStatus XtensaDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
++                                                ArrayRef<uint8_t> Bytes,
++                                                uint64_t Address,
++                                                raw_ostream &CS) const {
++  uint32_t Insn;
++  DecodeStatus Result;
++
++  Result = readInstruction24(Bytes, Address, Size, Insn, IsLittleEndian);
++  if (Result == MCDisassembler::Fail)
++    return MCDisassembler::Fail;
++  LLVM_DEBUG(dbgs() << "Trying Xtensa 24-bit instruction table :\n");
++  Result = decodeInstruction(DecoderTable24, MI, Insn, Address, this, STI);
++  return Result;
++}
+diff --git a/llvm/lib/Target/Xtensa/XtensaOperands.td b/llvm/lib/Target/Xtensa/XtensaOperands.td
+index c8fca6f5e7bf..3f73f91fe16e 100644
+--- a/llvm/lib/Target/Xtensa/XtensaOperands.td
++++ b/llvm/lib/Target/Xtensa/XtensaOperands.td
+@@ -25,6 +25,7 @@ class Immediate<ValueType vt, code pred, string asmop>
+ def Imm8_AsmOperand : ImmAsmOperand<"Imm8">;
+ def imm8 : Immediate<i32, [{ return Imm >= -128 && Imm <= 127; }], "Imm8_AsmOperand"> {
+   let EncoderMethod = "getImm8OpValue";
++  let DecoderMethod = "decodeImm8Operand";
+ }
+ 
+ // imm8_sh8 predicate - Immediate in the range [-32768,32512] with (bits[7-0] == 0)
+@@ -33,42 +34,49 @@ def Imm8_sh8_AsmOperand : ImmAsmOperand<"Imm8_sh8">;
+ def imm8_sh8 : Immediate<i32, [{ return Imm >= -32768 && Imm <= 32512 && ((Imm & 0xFF) == 0); }],
+                         "Imm8_sh8_AsmOperand"> {
+   let EncoderMethod = "getImm8_sh8OpValue";
++  let DecoderMethod = "decodeImm8_sh8Operand";
+ }
+ 
+ // imm12 predicate - Immediate in the range [-2048,2047]
+ def Imm12_AsmOperand : ImmAsmOperand<"Imm12">;
+ def imm12 : Immediate<i32, [{ return Imm >= -2048 && Imm <= 2047; }], "Imm12_AsmOperand"> {
+   let EncoderMethod = "getImm12OpValue";
++  let DecoderMethod = "decodeImm12Operand";
+ }
+ 
+ // imm12m predicate - Immediate for MOV operation
+ def Imm12m_AsmOperand : ImmAsmOperand<"Imm12m">;
+ def imm12m : Immediate<i32, [{ return Imm >= -2048 && Imm <= 2047; }], "Imm12m_AsmOperand"> {
+   let EncoderMethod = "getImm12OpValue";
++  let DecoderMethod = "decodeImm12Operand";
+ }
+ 
+ // uimm4 predicate - Immediate in the range [0,15]
+ def Uimm4_AsmOperand : ImmAsmOperand<"Uimm4">;
+ def uimm4 : Immediate<i32, [{ return Imm >= 0 && Imm <= 15; }], "Uimm4_AsmOperand"> {
+   let EncoderMethod = "getUimm4OpValue";
++  let DecoderMethod = "decodeUimm4Operand";
+ }
+ 
+ // uimm5 predicate - Immediate in the range [0,31]
+ def Uimm5_AsmOperand : ImmAsmOperand<"Uimm5">;
+ def uimm5 : Immediate<i32, [{ return Imm >= 0 && Imm <= 31; }], "Uimm5_AsmOperand"> {
+   let EncoderMethod = "getUimm5OpValue";
++  let DecoderMethod = "decodeUimm5Operand";
+ }
+ 
+ // imm1_16 predicate - Immediate in the range [1,16]
+ def Imm1_16_AsmOperand : ImmAsmOperand<"Imm1_16">;
+ def imm1_16 : Immediate<i32, [{ return Imm >= 1 && Imm <= 16; }], "Imm1_16_AsmOperand"> {
+   let EncoderMethod = "getImm1_16OpValue";
++  let DecoderMethod = "decodeImm1_16Operand";
+ }
+ 
+ // shimm1_31 predicate - Immediate in the range [1,31]
+ def Shimm1_31_AsmOperand : ImmAsmOperand<"Shimm1_31">;
+ def shimm1_31 : Immediate<i32, [{ return Imm >= 1 && Imm <= 31; }], "Shimm1_31_AsmOperand"> {
+   let EncoderMethod = "getShimm1_31OpValue";
++  let DecoderMethod = "decodeShimm1_31Operand";
+ }
+ 
+ // Memory offset 0..255 for 8-bit memory accesses
+@@ -105,13 +113,21 @@ class mem<Operand offset> : Operand<i32> {
+   let PrintMethod = "printMemOperand";
+ }
+ 
+-def mem8   : mem<offset8m8>;
++def mem8   : mem<offset8m8> {
++  let DecoderMethod = "decodeMem8Operand";
++}
+ 
+-def mem16  : mem<offset8m16>;
++def mem16  : mem<offset8m16> {
++  let DecoderMethod = "decodeMem16Operand";
++}
+ 
+-def mem32  : mem<offset8m32>;
++def mem32  : mem<offset8m32> {
++  let DecoderMethod = "decodeMem32Operand";
++}
+ 
+-def mem32n : mem<offset4m32>;
++def mem32n : mem<offset4m32> {
++  let DecoderMethod = "decodeMem32nOperand";
++}
+ 
+ //Add patterns for future use in stack addressing mode
+ def addr_ish1 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH1", [frameindex]>;
+-- 
+2.34.1
+

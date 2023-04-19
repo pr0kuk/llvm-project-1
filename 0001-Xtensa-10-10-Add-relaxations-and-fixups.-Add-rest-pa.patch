@@ -1,0 +1,1849 @@
+From ff25800d4ba0b577a44dc918da7a1fb3c29fdb13 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 12:00:00 +0100
+Subject: [PATCH] [Xtensa 10/10] Add relaxations and fixups. Add rest part of
+ Xtensa Core Instructions
+
+Add branch/jump/call/l32r instructions and fixups support. Add R_XTENSA_32/R_XTENSA_SLOT0_OP
+relocations in object files generation. Modify tests to support new instructions.
+Add tests for relocations and fixups.
+
+Differential Revision: https://reviews.llvm.org/D64836
+---
+ .../Xtensa/AsmParser/XtensaAsmParser.cpp      | 104 +++++++++
+ .../Disassembler/XtensaDisassembler.cpp       |  74 +++++++
+ .../Target/Xtensa/MCTargetDesc/CMakeLists.txt |   1 +
+ .../Xtensa/MCTargetDesc/XtensaAsmBackend.cpp  | 109 ++++++++-
+ .../MCTargetDesc/XtensaELFObjectWriter.cpp    |   8 +-
+ .../Xtensa/MCTargetDesc/XtensaFixupKinds.h    |  32 +++
+ .../Xtensa/MCTargetDesc/XtensaInstPrinter.cpp | 126 +++++++++++
+ .../Xtensa/MCTargetDesc/XtensaInstPrinter.h   |   6 +
+ .../MCTargetDesc/XtensaMCCodeEmitter.cpp      | 207 ++++++++++++++++++
+ .../Xtensa/MCTargetDesc/XtensaMCExpr.cpp      |  63 ++++++
+ .../Target/Xtensa/MCTargetDesc/XtensaMCExpr.h |  58 +++++
+ llvm/lib/Target/Xtensa/XtensaInstrInfo.td     | 202 +++++++++++++++++
+ llvm/lib/Target/Xtensa/XtensaOperands.td      |  68 ++++++
+ llvm/test/MC/Xtensa/Core/branch.s             | 153 +++++++++++++
+ llvm/test/MC/Xtensa/Core/call-jump.s          |  31 +++
+ llvm/test/MC/Xtensa/Core/invalid.s            |  29 +++
+ .../Xtensa/Relocations/fixups-diagnostics.s   |  14 ++
+ llvm/test/MC/Xtensa/Relocations/fixups.s      |  54 +++++
+ llvm/test/MC/Xtensa/Relocations/relocations.s | 177 +++++++++++++++
+ 19 files changed, 1512 insertions(+), 4 deletions(-)
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaFixupKinds.h
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.h
+ create mode 100644 llvm/test/MC/Xtensa/Core/branch.s
+ create mode 100644 llvm/test/MC/Xtensa/Core/call-jump.s
+ create mode 100644 llvm/test/MC/Xtensa/Relocations/fixups-diagnostics.s
+ create mode 100644 llvm/test/MC/Xtensa/Relocations/fixups.s
+ create mode 100644 llvm/test/MC/Xtensa/Relocations/relocations.s
+
+diff --git a/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp b/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp
+index 363a77536f0f..1bf2f3cbc284 100644
+--- a/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp
++++ b/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp
+@@ -15,6 +15,7 @@
+ #include "llvm/MC/MCContext.h"
+ #include "llvm/MC/MCExpr.h"
+ #include "llvm/MC/MCInst.h"
++#include "llvm/MC/MCInstrInfo.h"
+ #include "llvm/MC/MCParser/MCAsmLexer.h"
+ #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
+ #include "llvm/MC/MCParser/MCTargetAsmParser.h"
+@@ -63,6 +64,7 @@ class XtensaAsmParser : public MCTargetAsmParser {
+                                         SMLoc &EndLoc) override {
+     return MatchOperand_NoMatch;
+   }
++  OperandMatchResultTy parsePCRelTarget(OperandVector &Operands);
+ 
+ public:
+   enum XtensaMatchResultTy {
+@@ -180,6 +182,66 @@ public:
+ 
+   bool isImm1_16() const { return isImm(1, 16); }
+ 
++  bool isB4const() const {
++    if (Kind != Immediate)
++      return false;
++    if (auto *CE = dyn_cast<MCConstantExpr>(getImm())) {
++      int64_t Value = CE->getValue();
++      switch (Value) {
++      case -1:
++      case 1:
++      case 2:
++      case 3:
++      case 4:
++      case 5:
++      case 6:
++      case 7:
++      case 8:
++      case 10:
++      case 12:
++      case 16:
++      case 32:
++      case 64:
++      case 128:
++      case 256:
++        return true;
++      default:
++        return false;
++      }
++    }
++    return false;
++  }
++
++  bool isB4constu() const {
++    if (Kind != Immediate)
++      return false;
++    if (auto *CE = dyn_cast<MCConstantExpr>(getImm())) {
++      int64_t Value = CE->getValue();
++      switch (Value) {
++      case 32768:
++      case 65536:
++      case 2:
++      case 3:
++      case 4:
++      case 5:
++      case 6:
++      case 7:
++      case 8:
++      case 10:
++      case 12:
++      case 16:
++      case 32:
++      case 64:
++      case 128:
++      case 256:
++        return true;
++      default:
++        return false;
++      }
++    }
++    return false;
++  }
++
+   /// getStartLoc - Gets location of the first token of this operand
+   SMLoc getStartLoc() const override { return StartLoc; }
+   /// getEndLoc - Gets location of the last token of this operand
+@@ -328,6 +390,12 @@ bool XtensaAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
+     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                  "expected immediate in range [-32768, 32512], first 8 bits "
+                  "should be zero");
++  case Match_InvalidB4const:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected b4const immediate");
++  case Match_InvalidB4constu:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected b4constu immediate");
+   case Match_InvalidImm12:
+     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                  "expected immediate in range [-2048, 2047]");
+@@ -366,6 +434,30 @@ bool XtensaAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
+   report_fatal_error("Unknown match type detected!");
+ }
+ 
++OperandMatchResultTy
++XtensaAsmParser::parsePCRelTarget(OperandVector &Operands) {
++  MCAsmParser &Parser = getParser();
++  LLVM_DEBUG(dbgs() << "parsePCRelTarget\n");
++
++  SMLoc S = getLexer().getLoc();
++
++  // Expressions are acceptable
++  const MCExpr *Expr = nullptr;
++  if (Parser.parseExpression(Expr)) {
++    // We have no way of knowing if a symbol was consumed so we must ParseFail
++    return MatchOperand_ParseFail;
++  }
++
++  // Currently not support constants
++  if (Expr->getKind() == MCExpr::ExprKind::Constant) {
++    Error(getLoc(), "unknown operand");
++    return MatchOperand_ParseFail;
++  }
++
++  Operands.push_back(XtensaOperand::createImm(Expr, S, getLexer().getLoc()));
++  return MatchOperand_Success;
++}
++
+ bool XtensaAsmParser::parseRegister(MCRegister &RegNo, SMLoc &StartLoc,
+                                     SMLoc &EndLoc) {
+   const AsmToken &Tok = getParser().getTok();
+@@ -486,6 +578,18 @@ XtensaAsmParser::parseOperandWithModifier(OperandVector &Operands) {
+ /// If operand was parsed, returns false, else true.
+ bool XtensaAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic,
+                                    bool SR) {
++  // Check if the current operand has a custom associated parser, if so, try to
++  // custom parse the operand, or fallback to the general approach.
++  OperandMatchResultTy ResTy = MatchOperandParserImpl(Operands, Mnemonic);
++  if (ResTy == MatchOperand_Success)
++    return false;
++
++  // If there wasn't a custom match, try the generic matcher below. Otherwise,
++  // there was a match, but an error occurred, in which case, just return that
++  // the operand parsing failed.
++  if (ResTy == MatchOperand_ParseFail)
++    return true;
++
+   // Attempt to parse token as register
+   if (parseRegister(Operands, true, SR) == MatchOperand_Success)
+     return false;
+diff --git a/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp b/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp
+index dfa677789d1a..3e68a955daa4 100644
+--- a/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp
++++ b/llvm/lib/Target/Xtensa/Disassembler/XtensaDisassembler.cpp
+@@ -94,6 +94,59 @@ static DecodeStatus DecodeSRRegisterClass(MCInst &Inst, uint64_t RegNo,
+   return MCDisassembler::Fail;
+ }
+ 
++static bool tryAddingSymbolicOperand(int64_t Value, bool isBranch,
++                                     uint64_t Address, uint64_t Offset,
++                                     uint64_t InstSize, MCInst &MI,
++                                     const void *Decoder) {
++  const MCDisassembler *Dis = static_cast<const MCDisassembler *>(Decoder);
++  return Dis->tryAddingSymbolicOperand(MI, Value, Address, isBranch, Offset, /*OpSize=*/0,
++                                       InstSize);
++}
++
++static DecodeStatus decodeCallOperand(MCInst &Inst, uint64_t Imm,
++                                      int64_t Address, const void *Decoder) {
++  assert(isUInt<18>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(SignExtend64<20>(Imm << 2)));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeJumpOperand(MCInst &Inst, uint64_t Imm,
++                                      int64_t Address, const void *Decoder) {
++  assert(isUInt<18>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(SignExtend64<18>(Imm)));
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeBranchOperand(MCInst &Inst, uint64_t Imm,
++                                        int64_t Address, const void *Decoder) {
++  switch (Inst.getOpcode()) {
++  case Xtensa::BEQZ:
++  case Xtensa::BGEZ:
++  case Xtensa::BLTZ:
++  case Xtensa::BNEZ:
++    assert(isUInt<12>(Imm) && "Invalid immediate");
++    if (!tryAddingSymbolicOperand(SignExtend64<12>(Imm) + 4 + Address, true,
++                                  Address, 0, 3, Inst, Decoder))
++      Inst.addOperand(MCOperand::createImm(SignExtend64<12>(Imm)));
++    break;
++  default:
++    assert(isUInt<8>(Imm) && "Invalid immediate");
++    if (!tryAddingSymbolicOperand(SignExtend64<8>(Imm) + 4 + Address, true,
++                                  Address, 0, 3, Inst, Decoder))
++      Inst.addOperand(MCOperand::createImm(SignExtend64<8>(Imm)));
++  }
++  return MCDisassembler::Success;
++}
++
++static DecodeStatus decodeL32ROperand(MCInst &Inst, uint64_t Imm,
++                                      int64_t Address, const void *Decoder) {
++
++  assert(isUInt<16>(Imm) && "Invalid immediate");
++  Inst.addOperand(MCOperand::createImm(
++      SignExtend64<17>((Imm << 2) + 0x40000 + (Address & 0x3))));
++  return MCDisassembler::Success;
++}
++
+ static DecodeStatus decodeImm8Operand(MCInst &Inst, uint64_t Imm,
+                                       int64_t Address, const void *Decoder) {
+   assert(isUInt<8>(Imm) && "Invalid immediate");
+@@ -145,6 +198,27 @@ static DecodeStatus decodeShimm1_31Operand(MCInst &Inst, uint64_t Imm,
+   return MCDisassembler::Success;
+ }
+ 
++static int64_t TableB4const[16] = {-1, 1,  2,  3,  4,  5,  6,   7,
++                                   8,  10, 12, 16, 32, 64, 128, 256};
++static DecodeStatus decodeB4constOperand(MCInst &Inst, uint64_t Imm,
++                                         int64_t Address, const void *Decoder) {
++  assert(isUInt<4>(Imm) && "Invalid immediate");
++
++  Inst.addOperand(MCOperand::createImm(TableB4const[Imm]));
++  return MCDisassembler::Success;
++}
++
++static int64_t TableB4constu[16] = {32768, 65536, 2,  3,  4,  5,  6,   7,
++                                    8,     10,    12, 16, 32, 64, 128, 256};
++static DecodeStatus decodeB4constuOperand(MCInst &Inst, uint64_t Imm,
++                                          int64_t Address,
++                                          const void *Decoder) {
++  assert(isUInt<4>(Imm) && "Invalid immediate");
++
++  Inst.addOperand(MCOperand::createImm(TableB4constu[Imm]));
++  return MCDisassembler::Success;
++}
++
+ static DecodeStatus decodeMem8Operand(MCInst &Inst, uint64_t Imm,
+                                       int64_t Address, const void *Decoder) {
+   assert(isUInt<12>(Imm) && "Invalid immediate");
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+index 3dad67b1e9a6..6841b44f9d56 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+@@ -4,6 +4,7 @@ add_llvm_component_library(LLVMXtensaDesc
+   XtensaInstPrinter.cpp
+   XtensaMCAsmInfo.cpp
+   XtensaMCCodeEmitter.cpp
++  XtensaMCExpr.cpp
+   XtensaMCTargetDesc.cpp
+ 
+   LINK_COMPONENTS
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp
+index 7f711993dd5c..61417a2f2455 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp
+@@ -8,6 +8,7 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++#include "MCTargetDesc/XtensaFixupKinds.h"
+ #include "MCTargetDesc/XtensaMCTargetDesc.h"
+ #include "llvm/MC/MCAsmBackend.h"
+ #include "llvm/MC/MCAssembler.h"
+@@ -31,7 +32,9 @@ public:
+   XtensaMCAsmBackend(uint8_t osABI, bool isLE)
+       : MCAsmBackend(support::little), OSABI(osABI), IsLittleEndian(isLE) {}
+ 
+-  unsigned getNumFixupKinds() const override { return 1; }
++  unsigned getNumFixupKinds() const override {
++    return Xtensa::NumTargetFixupKinds;
++  }
+   const MCFixupKindInfo &getFixupKindInfo(MCFixupKind Kind) const override;
+   void applyFixup(const MCAssembler &Asm, const MCFixup &Fixup,
+                   const MCValue &Target, MutableArrayRef<char> Data,
+@@ -55,13 +58,113 @@ public:
+ 
+ const MCFixupKindInfo &
+ XtensaMCAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
+-  return MCAsmBackend::getFixupKindInfo(MCFixupKind::FK_NONE);
++  const static MCFixupKindInfo Infos[Xtensa::NumTargetFixupKinds] = {
++      // name                     offset bits  flags
++      {"fixup_xtensa_branch_6", 0, 16, MCFixupKindInfo::FKF_IsPCRel},
++      {"fixup_xtensa_branch_8", 16, 8, MCFixupKindInfo::FKF_IsPCRel},
++      {"fixup_xtensa_branch_12", 12, 12, MCFixupKindInfo::FKF_IsPCRel},
++      {"fixup_xtensa_jump_18", 6, 18, MCFixupKindInfo::FKF_IsPCRel},
++      {"fixup_xtensa_call_18", 6, 18,
++       MCFixupKindInfo::FKF_IsPCRel |
++           MCFixupKindInfo::FKF_IsAlignedDownTo32Bits},
++      {"fixup_xtensa_l32r_16", 8, 16,
++       MCFixupKindInfo::FKF_IsPCRel |
++           MCFixupKindInfo::FKF_IsAlignedDownTo32Bits}};
++
++  if (Kind < FirstTargetFixupKind)
++    return MCAsmBackend::getFixupKindInfo(Kind);
++  assert(unsigned(Kind - FirstTargetFixupKind) < getNumFixupKinds() &&
++         "Invalid kind!");
++  return Infos[Kind - FirstTargetFixupKind];
++}
++
++static uint64_t adjustFixupValue(const MCFixup &Fixup, uint64_t Value,
++                                 MCContext &Ctx) {
++  unsigned Kind = Fixup.getKind();
++  switch (Kind) {
++  default:
++    llvm_unreachable("Unknown fixup kind!");
++  case FK_Data_1:
++  case FK_Data_2:
++  case FK_Data_4:
++  case FK_Data_8:
++    return Value;
++  case Xtensa::fixup_xtensa_branch_6: {
++    Value -= 4;
++    if (!isInt<6>(Value))
++      Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
++    unsigned Hi2 = (Value >> 4) & 0x3;
++    unsigned Lo4 = Value & 0xf;
++    return (Hi2 << 4) | (Lo4 << 12);
++  }
++  case Xtensa::fixup_xtensa_branch_8:
++    Value -= 4;
++    if (!isInt<8>(Value))
++      Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
++    return (Value & 0xff);
++  case Xtensa::fixup_xtensa_branch_12:
++    Value -= 4;
++    if (!isInt<12>(Value))
++      Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
++    return (Value & 0xfff);
++  case Xtensa::fixup_xtensa_jump_18:
++    Value -= 4;
++    if (!isInt<18>(Value))
++      Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
++    return (Value & 0x3ffff);
++  case Xtensa::fixup_xtensa_call_18:
++    Value -= 4;
++    if (!isInt<20>(Value))
++      Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
++    if (Value & 0x3)
++      Ctx.reportError(Fixup.getLoc(), "fixup value must be 4-byte aligned");
++    return (Value & 0xffffc) >> 2;
++  case Xtensa::fixup_xtensa_l32r_16:
++    unsigned Offset = Fixup.getOffset();
++    if (Offset & 0x3)
++      Value -= 4;
++    if (!isInt<18>(Value) && (Value & 0x20000))
++      Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
++    if (Value & 0x3)
++      Ctx.reportError(Fixup.getLoc(), "fixup value must be 4-byte aligned");
++    return (Value & 0x3fffc) >> 2;
++  }
+ }
++
++static unsigned getSize(unsigned Kind) {
++  switch (Kind) {
++  default:
++    return 3;
++  case MCFixupKind::FK_Data_4:
++    return 4;
++  case Xtensa::fixup_xtensa_branch_6:
++    return 2;
++  }
++}
++
+ void XtensaMCAsmBackend::applyFixup(const MCAssembler &Asm,
+                                     const MCFixup &Fixup, const MCValue &Target,
+                                     MutableArrayRef<char> Data, uint64_t Value,
+                                     bool IsResolved,
+-                                    const MCSubtargetInfo *STI) const {}
++                                    const MCSubtargetInfo *STI) const {
++  MCContext &Ctx = Asm.getContext();
++  MCFixupKindInfo Info = getFixupKindInfo(Fixup.getKind());
++
++  Value = adjustFixupValue(Fixup, Value, Ctx);
++
++  // Shift the value into position.
++  Value <<= Info.TargetOffset;
++
++  if (!Value)
++    return; // Doesn't change encoding.
++
++  unsigned Offset = Fixup.getOffset();
++  unsigned FullSize = getSize(Fixup.getKind());
++
++  for (unsigned i = 0; i != FullSize; ++i) {
++    Data[Offset + i] |= uint8_t((Value >> (i * 8)) & 0xff);
++  }
++}
+ 
+ bool XtensaMCAsmBackend::mayNeedRelaxation(const MCInst &Inst,
+                                            const MCSubtargetInfo &STI) const {
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp
+index d407e188ab81..7788790ee66c 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp
+@@ -46,7 +46,13 @@ XtensaObjectWriter::~XtensaObjectWriter() {}
+ unsigned XtensaObjectWriter::getRelocType(MCContext &Ctx, const MCValue &Target,
+                                           const MCFixup &Fixup,
+                                           bool IsPCRel) const {
+-  report_fatal_error("invalid fixup kind!");
++
++  switch ((unsigned)Fixup.getKind()) {
++  case FK_Data_4:
++    return ELF::R_XTENSA_32;
++  default:
++    return ELF::R_XTENSA_SLOT0_OP;
++  }
+ }
+ 
+ std::unique_ptr<MCObjectTargetWriter>
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaFixupKinds.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaFixupKinds.h
+new file mode 100644
+index 000000000000..57b114e709a8
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaFixupKinds.h
+@@ -0,0 +1,32 @@
++//===-- XtensaMCFixups.h - Xtensa-specific fixup entries --------*- C++ -*-===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCFIXUPS_H
++#define LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCFIXUPS_H
++
++#include "llvm/MC/MCFixup.h"
++
++namespace llvm {
++namespace Xtensa {
++enum FixupKind {
++  fixup_xtensa_branch_6 = FirstTargetFixupKind,
++  fixup_xtensa_branch_8,
++  fixup_xtensa_branch_12,
++  fixup_xtensa_jump_18,
++  fixup_xtensa_call_18,
++  fixup_xtensa_l32r_16,
++  fixup_xtensa_invalid,
++  LastTargetFixupKind,
++  NumTargetFixupKinds = LastTargetFixupKind - FirstTargetFixupKind
++};
++} // end namespace Xtensa
++} // end namespace llvm
++
++#endif // LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCFIXUPS_H
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+index 47a17a2cd74d..ed802f762fe7 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+@@ -89,6 +89,70 @@ void XtensaInstPrinter::printMemOperand(const MCInst *MI, int OpNum,
+   printOperand(MI, OpNum + 1, OS);
+ }
+ 
++void XtensaInstPrinter::printBranchTarget(const MCInst *MI, int OpNum,
++                                          raw_ostream &OS) {
++  const MCOperand &MC = MI->getOperand(OpNum);
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Val = MC.getImm() + 4;
++    OS << ". ";
++    if (Val > 0)
++      OS << '+';
++    OS << Val;
++  } else if (MC.isExpr())
++    MC.getExpr()->print(OS, &MAI, true);
++  else
++    llvm_unreachable("Invalid operand");
++}
++
++void XtensaInstPrinter::printJumpTarget(const MCInst *MI, int OpNum,
++                                        raw_ostream &OS) {
++  const MCOperand &MC = MI->getOperand(OpNum);
++  if (MC.isImm()) {
++    int64_t Val = MC.getImm() + 4;
++    OS << ". ";
++    if (Val > 0)
++      OS << '+';
++    OS << Val;
++  } else if (MC.isExpr())
++    MC.getExpr()->print(OS, &MAI, true);
++  else
++    llvm_unreachable("Invalid operand");
++  ;
++}
++
++void XtensaInstPrinter::printCallOperand(const MCInst *MI, int OpNum,
++                                         raw_ostream &OS) {
++  const MCOperand &MC = MI->getOperand(OpNum);
++  if (MC.isImm()) {
++    int64_t Val = MC.getImm() + 4;
++    OS << ". ";
++    if (Val > 0)
++      OS << '+';
++    OS << Val;
++  } else if (MC.isExpr())
++    MC.getExpr()->print(OS, &MAI, true);
++  else
++    llvm_unreachable("Invalid operand");
++}
++
++void XtensaInstPrinter::printL32RTarget(const MCInst *MI, int OpNum,
++                                        raw_ostream &O) {
++  const MCOperand &MC = MI->getOperand(OpNum);
++  if (MC.isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    int64_t InstrOff = Value & 0x3;
++    Value -= InstrOff;
++    assert((Value >= -262144 && Value <= -4) &&
++           "Invalid argument, value must be in ranges [-262144,-4]");
++    Value += ((InstrOff + 0x3) & 0x4) - InstrOff;
++    O << ". ";
++    O << Value;
++  } else if (MC.isExpr())
++    MC.getExpr()->print(O, &MAI, true);
++  else
++    llvm_unreachable("Invalid operand");
++}
++
+ void XtensaInstPrinter::printImm8_AsmOperand(const MCInst *MI, int OpNum,
+                                              raw_ostream &O) {
+   if (MI->getOperand(OpNum).isImm()) {
+@@ -221,3 +285,65 @@ void XtensaInstPrinter::printOffset4m32_AsmOperand(const MCInst *MI, int OpNum,
+   } else
+     printOperand(MI, OpNum, O);
+ }
++
++void XtensaInstPrinter::printB4const_AsmOperand(const MCInst *MI, int OpNum,
++                                                raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++
++    switch (Value) {
++    case -1:
++    case 1:
++    case 2:
++    case 3:
++    case 4:
++    case 5:
++    case 6:
++    case 7:
++    case 8:
++    case 10:
++    case 12:
++    case 16:
++    case 32:
++    case 64:
++    case 128:
++    case 256:
++      break;
++    default:
++      assert((0) && "Invalid B4const argument");
++    }
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printB4constu_AsmOperand(const MCInst *MI, int OpNum,
++                                                 raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++
++    switch (Value) {
++    case 32768:
++    case 65536:
++    case 2:
++    case 3:
++    case 4:
++    case 5:
++    case 6:
++    case 7:
++    case 8:
++    case 10:
++    case 12:
++    case 16:
++    case 32:
++    case 64:
++    case 128:
++    case 256:
++      break;
++    default:
++      assert((0) && "Invalid B4constu argument");
++    }
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+index 5d62a9c3011f..ebbfda967f26 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+@@ -44,6 +44,10 @@ private:
+   // Print various types of operand.
+   void printOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+   void printMemOperand(const MCInst *MI, int OpNUm, raw_ostream &O);
++  void printBranchTarget(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printJumpTarget(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printCallOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printL32RTarget(const MCInst *MI, int OpNum, raw_ostream &O);
+ 
+   void printImm8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+   void printImm8_sh8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+@@ -57,6 +61,8 @@ private:
+   void printOffset8m16_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+   void printOffset8m32_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+   void printOffset4m32_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printB4const_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printB4constu_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+ };
+ } // end namespace llvm
+ 
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+index c52bfd33ce6b..1ef5b110c927 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+@@ -12,6 +12,8 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++#include "MCTargetDesc/XtensaFixupKinds.h"
++#include "MCTargetDesc/XtensaMCExpr.h"
+ #include "MCTargetDesc/XtensaMCTargetDesc.h"
+ #include "llvm/MC/MCCodeEmitter.h"
+ #include "llvm/MC/MCContext.h"
+@@ -20,6 +22,10 @@
+ #include "llvm/MC/MCInstrInfo.h"
+ #include "llvm/MC/MCRegisterInfo.h"
+ 
++#define GET_INSTRMAP_INFO
++#include "XtensaGenInstrInfo.inc"
++#undef GET_INSTRMAP_INFO
++
+ using namespace llvm;
+ 
+ #define DEBUG_TYPE "mccodeemitter"
+@@ -53,6 +59,22 @@ private:
+                              SmallVectorImpl<MCFixup> &Fixups,
+                              const MCSubtargetInfo &STI) const;
+ 
++  uint32_t getJumpTargetEncoding(const MCInst &MI, unsigned int OpNum,
++                                 SmallVectorImpl<MCFixup> &Fixups,
++                                 const MCSubtargetInfo &STI) const;
++
++  uint32_t getBranchTargetEncoding(const MCInst &MI, unsigned int OpNum,
++                                   SmallVectorImpl<MCFixup> &Fixups,
++                                   const MCSubtargetInfo &STI) const;
++
++  uint32_t getCallEncoding(const MCInst &MI, unsigned int OpNum,
++                           SmallVectorImpl<MCFixup> &Fixups,
++                           const MCSubtargetInfo &STI) const;
++
++  uint32_t getL32RTargetEncoding(const MCInst &MI, unsigned OpNum,
++                                 SmallVectorImpl<MCFixup> &Fixups,
++                                 const MCSubtargetInfo &STI) const;
++
+   uint32_t getMemRegEncoding(const MCInst &MI, unsigned OpNo,
+                              SmallVectorImpl<MCFixup> &Fixups,
+                              const MCSubtargetInfo &STI) const;
+@@ -84,6 +106,14 @@ private:
+   uint32_t getShimm1_31OpValue(const MCInst &MI, unsigned OpNo,
+                                SmallVectorImpl<MCFixup> &Fixups,
+                                const MCSubtargetInfo &STI) const;
++
++  uint32_t getB4constOpValue(const MCInst &MI, unsigned OpNo,
++                             SmallVectorImpl<MCFixup> &Fixups,
++                             const MCSubtargetInfo &STI) const;
++
++  uint32_t getB4constuOpValue(const MCInst &MI, unsigned OpNo,
++                              SmallVectorImpl<MCFixup> &Fixups,
++                              const MCSubtargetInfo &STI) const;
+ };
+ } // namespace
+ 
+@@ -126,6 +156,85 @@ XtensaMCCodeEmitter::getMachineOpValue(const MCInst &MI, const MCOperand &MO,
+   return 0;
+ }
+ 
++uint32_t
++XtensaMCCodeEmitter::getJumpTargetEncoding(const MCInst &MI, unsigned int OpNum,
++                                           SmallVectorImpl<MCFixup> &Fixups,
++                                           const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNum);
++
++  if (MO.isImm())
++    return MO.getImm();
++
++  const MCExpr *Expr = MO.getExpr();
++  Fixups.push_back(MCFixup::create(
++      0, Expr, MCFixupKind(Xtensa::fixup_xtensa_jump_18), MI.getLoc()));
++  return 0;
++}
++
++uint32_t XtensaMCCodeEmitter::getBranchTargetEncoding(
++    const MCInst &MI, unsigned int OpNum, SmallVectorImpl<MCFixup> &Fixups,
++    const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNum);
++  if (MO.isImm())
++    return static_cast<uint32_t>(MO.getImm());
++
++  const MCExpr *Expr = MO.getExpr();
++  switch (MI.getOpcode()) {
++  case Xtensa::BEQZ:
++  case Xtensa::BGEZ:
++  case Xtensa::BLTZ:
++  case Xtensa::BNEZ:
++    Fixups.push_back(MCFixup::create(
++        0, Expr, MCFixupKind(Xtensa::fixup_xtensa_branch_12), MI.getLoc()));
++    return 0;
++  default:
++    Fixups.push_back(MCFixup::create(
++        0, Expr, MCFixupKind(Xtensa::fixup_xtensa_branch_8), MI.getLoc()));
++    return 0;
++  }
++}
++
++uint32_t
++XtensaMCCodeEmitter::getCallEncoding(const MCInst &MI, unsigned int OpNum,
++                                     SmallVectorImpl<MCFixup> &Fixups,
++                                     const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNum);
++  if (MO.isImm()) {
++    int32_t Res = MO.getImm();
++    if (Res & 0x3) {
++      llvm_unreachable("Unexpected operand value!");
++    }
++    Res >>= 2;
++    return Res;
++  }
++
++  assert((MO.isExpr()) && "Unexpected operand value!");
++  const MCExpr *Expr = MO.getExpr();
++  Fixups.push_back(MCFixup::create(
++      0, Expr, MCFixupKind(Xtensa::fixup_xtensa_call_18), MI.getLoc()));
++  return 0;
++}
++
++uint32_t
++XtensaMCCodeEmitter::getL32RTargetEncoding(const MCInst &MI, unsigned OpNum,
++                                           SmallVectorImpl<MCFixup> &Fixups,
++                                           const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNum);
++  if (MO.isImm()) {
++    int32_t Res = MO.getImm();
++    // We don't check first 2 bits, because in these bits we could store first 2
++    // bits of instruction address
++    Res >>= 2;
++    return Res;
++  }
++
++  assert((MO.isExpr()) && "Unexpected operand value!");
++
++  Fixups.push_back(MCFixup::create(
++      0, MO.getExpr(), MCFixupKind(Xtensa::fixup_xtensa_l32r_16), MI.getLoc()));
++  return 0;
++}
++
+ uint32_t
+ XtensaMCCodeEmitter::getMemRegEncoding(const MCInst &MI, unsigned OpNo,
+                                        SmallVectorImpl<MCFixup> &Fixups,
+@@ -243,4 +352,102 @@ XtensaMCCodeEmitter::getImm1_16OpValue(const MCInst &MI, unsigned OpNo,
+ 
+   return (Res - 1);
+ }
++
++uint32_t
++XtensaMCCodeEmitter::getB4constOpValue(const MCInst &MI, unsigned OpNo,
++                                       SmallVectorImpl<MCFixup> &Fixups,
++                                       const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  uint32_t Res = static_cast<uint32_t>(MO.getImm());
++
++  switch (Res) {
++  case 0xffffffff:
++    Res = 0;
++    break;
++  case 1:
++  case 2:
++  case 3:
++  case 4:
++  case 5:
++  case 6:
++  case 7:
++  case 8:
++    break;
++  case 10:
++    Res = 9;
++    break;
++  case 12:
++    Res = 10;
++    break;
++  case 16:
++    Res = 11;
++    break;
++  case 32:
++    Res = 12;
++    break;
++  case 64:
++    Res = 13;
++    break;
++  case 128:
++    Res = 14;
++    break;
++  case 256:
++    Res = 15;
++    break;
++  default:
++    llvm_unreachable("Unexpected operand value!");
++  }
++
++  return Res;
++}
++
++uint32_t
++XtensaMCCodeEmitter::getB4constuOpValue(const MCInst &MI, unsigned OpNo,
++                                        SmallVectorImpl<MCFixup> &Fixups,
++                                        const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  uint32_t Res = static_cast<uint32_t>(MO.getImm());
++
++  switch (Res) {
++  case 32768:
++    Res = 0;
++    break;
++  case 65536:
++    Res = 1;
++    break;
++  case 2:
++  case 3:
++  case 4:
++  case 5:
++  case 6:
++  case 7:
++  case 8:
++    break;
++  case 10:
++    Res = 9;
++    break;
++  case 12:
++    Res = 10;
++    break;
++  case 16:
++    Res = 11;
++    break;
++  case 32:
++    Res = 12;
++    break;
++  case 64:
++    Res = 13;
++    break;
++  case 128:
++    Res = 14;
++    break;
++  case 256:
++    Res = 15;
++    break;
++  default:
++    llvm_unreachable("Unexpected operand value!");
++  }
++
++  return Res;
++}
+ #include "XtensaGenMCCodeEmitter.inc"
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.cpp
+new file mode 100644
+index 000000000000..cafd8b7e2978
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.cpp
+@@ -0,0 +1,63 @@
++//===-- XtensaMCExpr.cpp - Xtensa specific MC expression classes ----------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file contains the implementation of the assembly expression modifiers
++// accepted by the Xtensa architecture
++//
++//===----------------------------------------------------------------------===//
++
++#include "XtensaMCExpr.h"
++#include "llvm/MC/MCAssembler.h"
++#include "llvm/MC/MCContext.h"
++#include "llvm/MC/MCStreamer.h"
++#include "llvm/MC/MCSymbolELF.h"
++#include "llvm/MC/MCValue.h"
++#include "llvm/Object/ELF.h"
++#include "llvm/Support/ErrorHandling.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "xtensamcexpr"
++
++const XtensaMCExpr *XtensaMCExpr::create(const MCExpr *Expr, VariantKind Kind,
++                                         MCContext &Ctx) {
++  return new (Ctx) XtensaMCExpr(Expr, Kind);
++}
++
++void XtensaMCExpr::printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const {
++  bool HasVariant = getKind() != VK_Xtensa_None;
++  if (HasVariant)
++    OS << '%' << getVariantKindName(getKind()) << '(';
++  Expr->print(OS, MAI);
++  if (HasVariant)
++    OS << ')';
++}
++
++bool XtensaMCExpr::evaluateAsRelocatableImpl(MCValue &Res,
++                                             const MCAsmLayout *Layout,
++                                             const MCFixup *Fixup) const {
++  return getSubExpr()->evaluateAsRelocatable(Res, Layout, Fixup);
++}
++
++void XtensaMCExpr::visitUsedExpr(MCStreamer &Streamer) const {
++  Streamer.visitUsedExpr(*getSubExpr());
++}
++
++XtensaMCExpr::VariantKind XtensaMCExpr::getVariantKindForName(StringRef name) {
++  return StringSwitch<XtensaMCExpr::VariantKind>(name).Default(
++      VK_Xtensa_Invalid);
++}
++
++StringRef XtensaMCExpr::getVariantKindName(VariantKind Kind) {
++  switch (Kind) {
++  default:
++    llvm_unreachable("Invalid ELF symbol kind");
++  }
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.h
+new file mode 100644
+index 000000000000..4cc78fe26b05
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCExpr.h
+@@ -0,0 +1,58 @@
++//===-- XtensaMCExpr.h - Xtensa specific MC expression classes --*- C++ -*-===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file describes Xtensa-specific MCExprs
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCEXPR_H
++#define LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCEXPR_H
++
++#include "llvm/MC/MCExpr.h"
++
++namespace llvm {
++
++class StringRef;
++class XtensaMCExpr : public MCTargetExpr {
++public:
++  enum VariantKind { VK_Xtensa_None, VK_Xtensa_Invalid };
++
++private:
++  const MCExpr *Expr;
++  const VariantKind Kind;
++
++  explicit XtensaMCExpr(const MCExpr *Expr, VariantKind Kind)
++      : Expr(Expr), Kind(Kind) {}
++
++public:
++  static const XtensaMCExpr *create(const MCExpr *Expr, VariantKind Kind,
++                                    MCContext &Ctx);
++
++  VariantKind getKind() const { return Kind; }
++
++  const MCExpr *getSubExpr() const { return Expr; }
++
++  void printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const override;
++  bool evaluateAsRelocatableImpl(MCValue &Res, const MCAsmLayout *Layout,
++                                 const MCFixup *Fixup) const override;
++  void visitUsedExpr(MCStreamer &Streamer) const override;
++  MCFragment *findAssociatedFragment() const override {
++    return getSubExpr()->findAssociatedFragment();
++  }
++
++  void fixELFSymbolsInTLSFixups(MCAssembler &Asm) const override {}
++
++  static VariantKind getVariantKindForName(StringRef name);
++  static StringRef getVariantKindName(VariantKind Kind);
++};
++
++} // end namespace llvm.
++
++#endif // LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCEXPR_H
+diff --git a/llvm/lib/Target/Xtensa/XtensaInstrInfo.td b/llvm/lib/Target/Xtensa/XtensaInstrInfo.td
+index c9dd5d32a25e..268a9943d8c1 100644
+--- a/llvm/lib/Target/Xtensa/XtensaInstrInfo.td
++++ b/llvm/lib/Target/Xtensa/XtensaInstrInfo.td
+@@ -232,6 +232,208 @@ def S8I  : Store_II8<0x04, "s8i", truncstorei8, addr_ish1, mem8>;
+ def S16I : Store_II8<0x05, "s16i", truncstorei16, addr_ish2, mem16>;
+ def S32I : Store_II8<0x06, "s32i", store, addr_ish4, mem32>;
+ 
++def L32R : RI16_Inst<0x01, (outs AR:$t), (ins L32Rtarget:$label),
++                    "l32r\t$t, $label", []> {
++  bits<16> label;
++  let imm16 = label;
++}
++
++//===----------------------------------------------------------------------===//
++// Conditional branch instructions
++//===----------------------------------------------------------------------===//
++let isBranch = 1, isTerminator = 1 in {
++  class Branch_RR<bits<4> oper, string instrAsm, CondCode CC>
++      : RRI8_Inst<0x07, (outs),
++                 (ins AR:$s, AR:$t, brtarget:$target),
++                  instrAsm#"\t$s, $t, $target",
++                 [(brcc CC, AR:$s, AR:$t,  bb:$target)]> {
++    bits<8> target;
++
++    let r = oper;
++    let imm8 = target;
++  }
++
++  class Branch_RI<bits<4> oper, string instrAsm, CondCode CC>
++      : RRI8_Inst<0x06, (outs),
++                 (ins AR:$s, b4const:$imm, brtarget:$target),
++                  instrAsm#"\t$s, $imm, $target",
++                 [(brcc CC, AR:$s, b4const:$imm,  bb:$target)]> {
++    bits<4> imm;
++    bits<8> target;
++
++    let t = oper;
++    let r = imm;
++    let imm8 = target;
++  }
++
++  class Branch_RIU<bits<4> oper, string instrAsm, CondCode CC>
++    : RRI8_Inst<0x06, (outs),
++               (ins AR:$s, b4constu:$imm, brtarget:$target),
++                instrAsm#"\t$s, $imm, $target",
++               [(brcc CC, AR:$s, b4constu:$imm,  bb:$target)]> {
++    bits<4> imm;
++    bits<8> target;
++
++    let t = oper;
++    let r = imm;
++    let imm8 = target;
++  }
++
++  class Branch_RZ<bits<2> n, bits<2> m, string instrAsm, CondCode CC>
++    : BRI12_Inst<0x06, n, m, (outs),
++                (ins AR:$s, brtarget:$target),
++                 instrAsm#"\t$s, $target",
++                [(brcc CC, AR:$s, (i32 0),  bb:$target)]> {
++    bits<12> target;
++
++    let imm12 = target;
++  }
++}
++
++def BEQ   : Branch_RR<0x01, "beq", SETEQ>;
++def BNE   : Branch_RR<0x09, "bne", SETNE>;
++def BGE   : Branch_RR<0x0A, "bge", SETGE>;
++def BLT   : Branch_RR<0x02, "blt", SETLT>;
++def BGEU  : Branch_RR<0x0B, "bgeu", SETUGE>;
++def BLTU  : Branch_RR<0x03, "bltu", SETULT>;
++
++def BEQI  : Branch_RI<0x02, "beqi", SETEQ>;
++def BNEI  : Branch_RI<0x06, "bnei", SETNE>;
++def BGEI  : Branch_RI<0x0E, "bgei", SETGE>;
++def BLTI  : Branch_RI<0x0A, "blti", SETLT>;
++def BGEUI : Branch_RIU<0x0F, "bgeui", SETUGE>;
++def BLTUI : Branch_RIU<0x0B, "bltui", SETULT>;
++
++def BEQZ  : Branch_RZ<0x01, 0x00, "beqz", SETEQ>;
++def BNEZ  : Branch_RZ<0x01, 0x01, "bnez", SETNE>;
++def BGEZ  : Branch_RZ<0x01, 0x03, "bgez", SETGE>;
++def BLTZ  : Branch_RZ<0x01, 0x02, "bltz", SETLT>;
++
++def BALL : RRI8_Inst<0x07, (outs),
++                    (ins AR:$s, AR:$t, brtarget:$target),
++                    "ball\t$s, $t, $target", []> {
++  bits<8> target;
++
++  let r = 0x04;
++  let imm8 = target;
++}
++
++def BANY : RRI8_Inst<0x07, (outs),
++                    (ins AR:$s, AR:$t, brtarget:$target),
++                    "bany\t$s, $t, $target", []> {
++  bits<8> target;
++
++  let r = 0x08;
++  let imm8 = target;
++}
++
++def BBC : RRI8_Inst<0x07, (outs),
++                   (ins AR:$s, AR:$t, brtarget:$target),
++                   "bbc\t$s, $t, $target", []> {
++  bits<8> target;
++
++  let r = 0x05;
++  let imm8 = target;
++}
++
++def BBS : RRI8_Inst<0x07, (outs),
++                   (ins AR:$s, AR:$t, brtarget:$target),
++                   "bbs\t$s, $t, $target", []> {
++  bits<8> target;
++
++  let r = 0x0d;
++  let imm8 = target;
++}
++
++def BNALL : RRI8_Inst<0x07, (outs),
++                    (ins AR:$s, AR:$t, brtarget:$target),
++                    "bnall\t$s, $t, $target", []> {
++  bits<8> target;
++
++  let r = 0x0c;
++  let imm8 = target;
++}
++
++def BNONE : RRI8_Inst<0x07, (outs),
++                     (ins AR:$s, AR:$t, brtarget:$target),
++                     "bnone\t$s, $t, $target", []> {
++  bits<8> target;
++
++  let r = 0x00;
++  let imm8 = target;
++}
++
++def BBCI : RRI8_Inst<0x07, (outs),
++                    (ins AR:$s, uimm5:$imm, brtarget:$target),
++                    "bbci\t$s, $imm, $target", []> {
++  bits<8> target;
++  bits<5> imm;
++
++  let r{3-1} = 0x3;
++  let r{0} = imm{4};
++  let t{3-0} = imm{3-0};
++  let imm8 = target;
++}
++
++def BBSI : RRI8_Inst<0x07, (outs),
++                    (ins AR:$s, uimm5:$imm, brtarget:$target),
++                    "bbsi\t$s, $imm, $target", []> {
++  bits<8> target;
++  bits<5> imm;
++
++  let r{3-1} = 0x7;
++  let r{0} = imm{4};
++  let t{3-0} = imm{3-0};
++  let imm8 = target;
++}
++
++//===----------------------------------------------------------------------===//
++// Call and jump instructions
++//===----------------------------------------------------------------------===//
++
++let isBranch = 1, isTerminator = 1, isBarrier = 1 in {
++  def J : CALL_Inst<0x06, (outs), (ins jumptarget:$offset),
++                   "j\t$offset",
++                   [(br bb:$offset)]> {
++    let n = 0x0;
++  }
++
++  def JX : CALLX_Inst<0x00, 0x00, 0x00, (outs), (ins AR:$s),
++                     "jx\t$s",
++                     [(brind AR:$s)]> {
++    let m = 0x2;
++    let n = 0x2;
++    let r = 0;
++    let isIndirectBranch = 1;
++  }
++}
++
++let isCall = 1, Defs = [A0] in {
++  def CALL0 : CALL_Inst<0x05, (outs), (ins pcrel32call:$offset),
++                       "call0\t$offset", []> {
++    let n = 0;
++  }
++
++  def CALLX0 : CALLX_Inst<0x00, 0x00, 0x00, (outs), (ins AR:$s),
++                         "callx0\t$s", []> {
++    let m = 0x3;
++    let n = 0x0;
++    let r = 0;
++  }
++}
++
++let isReturn = 1, isTerminator = 1,
++    isBarrier = 1, Uses = [A0] in {
++
++  def RET : CALLX_Inst<0x00, 0x00, 0x00, (outs), (ins),
++                      "ret", []> {
++    let m = 0x2;
++    let n = 0x0;
++    let s = 0;
++    let r = 0;
++  }
++}
++
+ //===----------------------------------------------------------------------===//
+ // Mem barrier instructions
+ //===----------------------------------------------------------------------===//
+diff --git a/llvm/lib/Target/Xtensa/XtensaOperands.td b/llvm/lib/Target/Xtensa/XtensaOperands.td
+index 3f73f91fe16e..7a1a2e86e8c2 100644
+--- a/llvm/lib/Target/Xtensa/XtensaOperands.td
++++ b/llvm/lib/Target/Xtensa/XtensaOperands.td
+@@ -102,6 +102,36 @@ def Offset4m32_AsmOperand : ImmAsmOperand<"Offset4m32">;
+ def offset4m32 : Immediate<i32,
+     [{ return Imm >= 0 && Imm <= 60 && (Imm & 0x3 == 0); }],
+     "Offset4m32_AsmOperand">;
++
++// b4const predicate - Branch Immediate 4-bit signed operand
++def B4const_AsmOperand: ImmAsmOperand<"B4const">;
++def b4const: Immediate<i32,
++  [{ switch (Imm) {
++        case -1: case 1: case 2: case 3:  case 4:
++        case 5:  case 6: case 7: case 8: case 10: case 12:
++        case 16: case 32: case 64: case 128: case 256: return 1;
++        default: return 0;
++     }
++  }],
++  "B4const_AsmOperand"> {
++  let EncoderMethod = "getB4constOpValue";
++  let DecoderMethod = "decodeB4constOperand";
++}
++
++// b4constu predicate - Branch Immediate 4-bit unsigned operand
++def B4constu_AsmOperand: ImmAsmOperand<"B4constu">;
++def b4constu: Immediate<i32,
++  [{ switch (Imm) {
++        case 32768: case 65536: case 2: case 3:  case 4:
++        case 5:  case 6: case 7: case 8: case 10: case 12:
++        case 16: case 32: case 64: case 128: case 256: return 1;
++        default: return 0;
++     }
++  }],
++  "B4constu_AsmOperand"> {
++  let EncoderMethod = "getB4constuOpValue";
++  let DecoderMethod = "decodeB4constuOperand";
++}
+ //===----------------------------------------------------------------------===//
+ // Memory address operands
+ //===----------------------------------------------------------------------===//
+@@ -133,3 +163,41 @@ def mem32n : mem<offset4m32> {
+ def addr_ish1 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH1", [frameindex]>;
+ def addr_ish2 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH2", [frameindex]>;
+ def addr_ish4 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH4", [frameindex]>;
++
++//===----------------------------------------------------------------------===//
++// Symbolic address operands
++//===----------------------------------------------------------------------===//
++def XtensaPCRelTargetAsmOperand : AsmOperandClass {
++  let Name = "PCRelTarget";
++  let ParserMethod = "parsePCRelTarget";
++  let PredicateMethod = "isImm";
++  let RenderMethod = "addImmOperands";
++}
++
++def  pcrel32call : Operand<iPTR> {
++  let PrintMethod = "printCallOperand";
++  let EncoderMethod = "getCallEncoding";
++  let DecoderMethod = "decodeCallOperand";
++  let ParserMatchClass = XtensaPCRelTargetAsmOperand;
++}
++
++def brtarget : Operand<OtherVT> {
++  let PrintMethod = "printBranchTarget";
++  let EncoderMethod = "getBranchTargetEncoding";
++  let DecoderMethod = "decodeBranchOperand";
++  let ParserMatchClass = XtensaPCRelTargetAsmOperand;
++}
++
++def jumptarget : Operand<OtherVT> {
++  let PrintMethod = "printJumpTarget";
++  let EncoderMethod = "getJumpTargetEncoding";
++  let DecoderMethod = "decodeJumpOperand";
++  let ParserMatchClass = XtensaPCRelTargetAsmOperand;
++}
++
++def L32Rtarget : Operand<OtherVT> {
++  let PrintMethod = "printL32RTarget";
++  let EncoderMethod = "getL32RTargetEncoding";
++  let DecoderMethod = "decodeL32ROperand";
++  let ParserMatchClass = XtensaPCRelTargetAsmOperand;
++}
+diff --git a/llvm/test/MC/Xtensa/Core/branch.s b/llvm/test/MC/Xtensa/Core/branch.s
+new file mode 100644
+index 000000000000..7e9ba5f71334
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/branch.s
+@@ -0,0 +1,153 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRI8
++# CHECK-INST:  ball    a1, a3, LBL0
++# CHECK: encoding: [0x37,0x41,A]
++ball a1, a3, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bany    a8, a13, LBL0
++# CHECK: encoding: [0xd7,0x88,A]
++bany a8, a13, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bbc     a8, a7, LBL0
++# CHECK: encoding: [0x77,0x58,A]
++bbc a8, a7, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bbci    a3, 16, LBL0
++# CHECK: encoding: [0x07,0x73,A]
++bbci a3, 16, LBL0
++
++# CHECK-INST:  bbci    a3, 16, LBL0
++# CHECK: encoding: [0x07,0x73,A]
++bbci a3, (16), LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bbs     a12, a5, LBL0
++# CHECK: encoding: [0x57,0xdc,A]
++bbs a12, a5, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bbsi    a3, 16, LBL0
++# CHECK: encoding: [0x07,0xf3,A]
++bbsi a3, 16, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bnall   a7, a3, LBL0
++# CHECK: encoding: [0x37,0xc7,A]
++bnall a7, a3, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bnone   a2, a4, LBL0
++# CHECK: encoding: [0x47,0x02,A]
++bnone a2, a4, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  beq     a1, a2, LBL0
++# CHECK: encoding: [0x27,0x11,A]
++beq a1, a2, LBL0
++
++# CHECK-INST:  beq     a11, a5, LBL0
++# CHECK: encoding: [0x57,0x1b,A]
++beq a11, a5, LBL0
++
++# Instruction format BRI8
++# CHECK-INST:  beqi    a1, 256, LBL0
++# CHECK: encoding: [0x26,0xf1,A]
++beqi a1, 256, LBL0
++
++# CHECK-INST:  beqi    a11, -1, LBL0
++# CHECK: encoding: [0x26,0x0b,A]
++beqi a11, -1, LBL0
++
++# Instruction format BRI12
++# CHECK-INST:  beqz    a8, LBL0
++# CHECK: encoding: [0x16,0bAAAA1000,A]
++beqz a8, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bge     a14, a2, LBL0
++# CHECK: encoding: [0x27,0xae,A]
++bge a14, a2, LBL0
++
++# Instruction format BRI8
++# CHECK-INST:  bgei    a11, -1, LBL0
++# CHECK: encoding: [0xe6,0x0b,A]
++bgei a11, -1, LBL0
++
++# CHECK-INST:  bgei    a11, 128, LBL0
++# CHECK: encoding: [0xe6,0xeb,A]
++bgei a11, 128, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bgeu    a14, a2, LBL0
++# CHECK: encoding: [0x27,0xbe,A]
++bgeu a14, a2, LBL0
++
++# CHECK-INST:  bgeu    a13, a1, LBL0
++# CHECK: encoding: [0x17,0xbd,A]
++bgeu a13, a1, LBL0
++
++# Instruction format BRI8
++# CHECK-INST:  bgeui   a9, 32768, LBL0
++# CHECK: encoding: [0xf6,0x09,A]
++bgeui a9, 32768, LBL0
++
++# CHECK-INST:  bgeui   a7, 65536, LBL0
++# CHECK: encoding: [0xf6,0x17,A]
++bgeui a7, 65536, LBL0
++
++# CHECK-INST:  bgeui   a7, 64, LBL0
++# CHECK: encoding: [0xf6,0xd7,A]
++bgeui a7, 64, LBL0
++
++# Instruction format BRI12
++# CHECK-INST:  bgez    a8, LBL0
++# CHECK: encoding: [0xd6,0bAAAA1000,A]
++bgez a8, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  blt     a14, a2, LBL0
++# CHECK: encoding: [0x27,0x2e,A]
++blt a14, a2, LBL0
++
++# Instruction format BRI8
++# CHECK-INST:  blti    a12, -1, LBL0
++# CHECK: encoding: [0xa6,0x0c,A]
++blti a12, -1, LBL0
++
++# CHECK-INST:  blti    a0, 32, LBL0
++# CHECK: encoding: [0xa6,0xc0,A]
++blti a0, 32, LBL0
++
++# Instruction format BRI8
++# CHECK-INST:  bltui   a7, 16, LBL0
++# CHECK: encoding: [0xb6,0xb7,A]
++bltui a7, 16, LBL0
++
++# Instruction format BRI12
++# CHECK-INST:  bltz    a6, LBL0
++# CHECK: encoding: [0x96,0bAAAA0110,A]
++bltz a6, LBL0
++
++# Instruction format RRI8
++# CHECK-INST:  bne     a3, a4, LBL0
++# CHECK: encoding: [0x47,0x93,A]
++bne a3, a4, LBL0
++
++# Instruction format BRI8
++# CHECK-INST:  bnei    a5, 12, LBL0
++# CHECK: encoding: [0x66,0xa5,A]
++bnei a5, 12, LBL0
++
++# Instruction format BRI12
++# CHECK-INST:  bnez    a5, LBL0
++# CHECK: encoding: [0x56,0bAAAA0101,A]
++bnez a5, LBL0
+diff --git a/llvm/test/MC/Xtensa/Core/call-jump.s b/llvm/test/MC/Xtensa/Core/call-jump.s
+new file mode 100644
+index 000000000000..2e47a0eb4748
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/call-jump.s
+@@ -0,0 +1,31 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format CALL
++# CHECK-INST:  call0   LBL0
++# CHECK: encoding: [0bAA000101,A,A]
++call0  LBL0
++
++# Instruction format CALLX
++# CHECK-INST:  callx0  a1
++# CHECK: encoding: [0xc0,0x01,0x00]
++callx0 a1
++
++# Instruction format CALL
++# CHECK-INST:  j       LBL0
++# CHECK: encoding: [0bAA000110,A,A]
++j LBL0
++
++# Instruction format CALLX
++# CHECK-INST:  jx      a2
++# CHECK: encoding: [0xa0,0x02,0x00]
++jx a2
++
++# Instruction format CALLX
++# CHECK-INST: ret
++# CHECK: encoding: [0x80,0x00,0x00]
++ret
+diff --git a/llvm/test/MC/Xtensa/Core/invalid.s b/llvm/test/MC/Xtensa/Core/invalid.s
+index 910e7a36ae4b..d3d8fba8169a 100644
+--- a/llvm/test/MC/Xtensa/Core/invalid.s
++++ b/llvm/test/MC/Xtensa/Core/invalid.s
+@@ -48,6 +48,14 @@ l16si a1, a2, 512
+ l32i a1, a2, 1024
+ # CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [0, 1020], first 2 bits should be zero
+ 
++# b4const
++beqi a1, 257, LBL0
++# CHECK: :[[#@LINE-1]]:10: error: expected b4const immediate
++
++# b4constu
++bgeui a9, 32000, LBL0
++# CHECK: :[[#@LINE-1]]:11: error: expected b4constu immediate
++
+ # Invalid number of operands
+ addi a1, a2
+ # CHECK: :[[#@LINE-1]]:1: error: too few operands for instruction
+@@ -85,6 +93,17 @@ wsr.uregister a2
+ wsr a2, uregister
+ # CHECK: :[[#@LINE-1]]:9: error: invalid operand for instruction
+ 
++# Instruction format BRI12
++beqz b1, LBL0
++# CHECK: :[[#@LINE-1]]:6: error: invalid operand for instruction
++# Instruction format BRI8
++bltui r7, 16, LBL0
++# CHECK: :[[#@LINE-1]]:7: error: invalid operand for instruction
++
++# Instruction format CALLX
++callx0 r10
++# CHECK: :[[#@LINE-1]]:8: error: invalid operand for instruction
++
+ # Check invalid operands order for different formats
+ # Instruction format RRI8
+ addi a1, 10, a2
+@@ -93,3 +112,13 @@ addi a1, 10, a2
+ # Instruction format RSR
+ wsr sar, a2
+ # CHECK: :[[#@LINE-1]]:5: error: invalid operand for instruction
++
++# Instruction format BRI12
++beqz LBL0, a2
++# CHECK: :[[#@LINE-1]]:6: error: invalid operand for instruction
++
++# Instruction format BRI8
++bltui 16, a7, LBL0
++# CHECK: :[[#@LINE-1]]:7: error: invalid operand for instruction
++bltui a7, LBL0, 16
++# CHECK: :[[#@LINE-1]]:19: error: unknown operand
+diff --git a/llvm/test/MC/Xtensa/Relocations/fixups-diagnostics.s b/llvm/test/MC/Xtensa/Relocations/fixups-diagnostics.s
+new file mode 100644
+index 000000000000..e0eac900552c
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Relocations/fixups-diagnostics.s
+@@ -0,0 +1,14 @@
++# RUN: not llvm-mc -triple xtensa -filetype obj < %s -o /dev/null 2>&1 | FileCheck %s
++
++  .align 4
++
++  beq a0, a1, LBL1 # CHECK: :[[@LINE]]:3: error: fixup value out of range
++LBL0:
++  beqz a0, LBL2 # CHECK: :[[@LINE]]:3: error: fixup value out of range
++
++  call0 LBL0 # CHECK: :[[@LINE]]:3: error: fixup value must be 4-byte aligned
++
++  .space 1<<8
++LBL1:
++  .space 1<<12
++LBL2:
+diff --git a/llvm/test/MC/Xtensa/Relocations/fixups.s b/llvm/test/MC/Xtensa/Relocations/fixups.s
+new file mode 100644
+index 000000000000..cd76f2a23322
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Relocations/fixups.s
+@@ -0,0 +1,54 @@
++# RUN: llvm-mc -triple xtensa < %s -show-encoding \
++# RUN:     | FileCheck -check-prefix=CHECK-FIXUP %s
++# RUN: llvm-mc -filetype=obj -triple xtensa < %s \
++# RUN:     | llvm-objdump -d - | FileCheck -check-prefix=CHECK-INSTR %s
++
++
++# Checks that fixups that can be resolved within the same object file are
++# applied correctly
++.align 4
++LBL0:
++
++.fill 12
++
++beq a0, a1, LBL0
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL0, kind: fixup_xtensa_branch_8
++# CHECK-INSTR: beq a0, a1, . -12
++
++beq a0, a1, LBL1
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL1, kind: fixup_xtensa_branch_8
++# CHECK-INSTR: beq a0, a1, . +24
++
++beqz a2, LBL0
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL0, kind: fixup_xtensa_branch_12
++# CHECK-INSTR: beqz a2, . -18
++
++beqz a2, LBL1
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL1, kind: fixup_xtensa_branch_12
++# CHECK-INSTR: beqz a2, . +18
++
++call0 LBL0
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL0, kind: fixup_xtensa_call_18
++# CHECK-INSTR: call0 . -24
++
++call0 LBL2
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL2, kind: fixup_xtensa_call_18
++# CHECK-INSTR: call0 . +2056
++
++j LBL0
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL0, kind: fixup_xtensa_jump_18
++# CHECK-INSTR: j . -30
++
++j LBL2
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL2, kind: fixup_xtensa_jump_18
++# CHECK-INSTR: j . +2047
++
++l32r a1, LBL0
++# CHECK-FIXUP: fixup A - offset: 0, value: LBL0, kind: fixup_xtensa_l32r_16
++# CHECK-INSTR: l32r a1, . -36
++
++LBL1:
++
++.fill 2041
++
++LBL2:
+diff --git a/llvm/test/MC/Xtensa/Relocations/relocations.s b/llvm/test/MC/Xtensa/Relocations/relocations.s
+new file mode 100644
+index 000000000000..19c2e1635250
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Relocations/relocations.s
+@@ -0,0 +1,177 @@
++# RUN: llvm-mc -triple xtensa < %s -show-encoding \
++# RUN:     | FileCheck -check-prefix=INSTR -check-prefix=FIXUP %s
++# RUN: llvm-mc -filetype=obj -triple xtensa < %s \
++# RUN:     | llvm-readobj -r - | FileCheck -check-prefix=RELOC %s
++
++# Check prefixes:
++# RELOC - Check the relocation in the object.
++# FIXUP - Check the fixup on the instruction.
++# INSTR - Check the instruction is handled properly by the ASMPrinter
++
++.long func
++# RELOC: R_XTENSA_32 func
++
++ball a1, a3, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  ball    a1, a3, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bany a8, a13, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bany    a8, a13, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bbc a8, a7, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bbc     a8, a7, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bbci a3, 16, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bbci    a3, 16, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bbs a12, a5, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bbs     a12, a5, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bbsi a3, 16, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bbsi    a3, 16, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bnall a7, a3, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bnall   a7, a3, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bnone a2, a4, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bnone   a2, a4, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++beq a1, a2, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  beq     a1, a2, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++beq a11, a5, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  beq     a11, a5, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++beqi a1, 256, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  beqi    a1, 256, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++beqi a11, -1, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  beqi    a11, -1, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++beqz a8, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  beqz    a8, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_12
++
++bge a14, a2, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bge     a14, a2, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgei a11, -1, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgei    a11, -1, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgei a11, 128, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgei    a11, 128, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgeu a14, a2, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgeu    a14, a2, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgeui a9, 32768, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgeui   a9, 32768, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgeui a7, 65536, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgeui   a7, 65536, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgeui a7, 64, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgeui   a7, 64, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgez a8, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgez    a8, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_12
++
++blt a14, a2, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  blt     a14, a2, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++blti a12, -1, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  blti    a12, -1, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++blti a0, 32, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  blti    a0, 32, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bgeu a13, a1, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bgeu    a13, a1, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bltui a7, 16, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bltui   a7, 16, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bltz a6, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bltz    a6, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_12
++
++bne a3, a4, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bne     a3, a4, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bnei a5, 12, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bnei    a5, 12, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_8
++
++bnez a5, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  bnez    a5, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_branch_12
++
++call0  func
++# RELOC: R_XTENSA_SLOT0_OP
++# INST:  call0   func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_call_18
++
++j func
++# RELOC: R_XTENSA_SLOT0_OP
++# INSTR: j func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_jump_18
++
++l32r a6, func
++# RELOC: R_XTENSA_SLOT0_OP
++# INSTR: l32r    a6, func
++# FIXUP: fixup A - offset: 0, value: func, kind: fixup_xtensa_l32r_16
+-- 
+2.34.1
+

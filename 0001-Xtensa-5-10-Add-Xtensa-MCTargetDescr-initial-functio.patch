@@ -1,0 +1,606 @@
+From 6017209760c61f95ebc531d398f42a68e3fc9313 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:52:38 +0100
+Subject: [PATCH] [Xtensa 5/10] Add Xtensa MCTargetDescr initial functionality
+
+Differential Revision: https://reviews.llvm.org/D64831
+---
+ llvm/lib/MC/MCObjectFileInfo.cpp              |   3 +
+ llvm/lib/Target/Xtensa/CMakeLists.txt         |   1 +
+ .../Target/Xtensa/MCTargetDesc/CMakeLists.txt |   4 +
+ .../Xtensa/MCTargetDesc/XtensaAsmBackend.cpp  | 121 ++++++++++++++++
+ .../MCTargetDesc/XtensaELFObjectWriter.cpp    |  60 ++++++++
+ .../Xtensa/MCTargetDesc/XtensaMCAsmInfo.cpp   |  32 +++++
+ .../Xtensa/MCTargetDesc/XtensaMCAsmInfo.h     |  30 ++++
+ .../MCTargetDesc/XtensaMCCodeEmitter.cpp      | 129 ++++++++++++++++++
+ .../MCTargetDesc/XtensaMCTargetDesc.cpp       |  58 +++++++-
+ .../Xtensa/MCTargetDesc/XtensaMCTargetDesc.h  |  39 ++++++
+ llvm/lib/Target/Xtensa/XtensaOperands.td      |   8 +-
+ 11 files changed, 481 insertions(+), 4 deletions(-)
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.h
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+
+diff --git a/llvm/lib/MC/MCObjectFileInfo.cpp b/llvm/lib/MC/MCObjectFileInfo.cpp
+index e773e1044426..7af00b71677c 100644
+--- a/llvm/lib/MC/MCObjectFileInfo.cpp
++++ b/llvm/lib/MC/MCObjectFileInfo.cpp
+@@ -357,6 +357,9 @@ void MCObjectFileInfo::initELFMCObjectFileInfo(const Triple &T, bool Large) {
+     FDECFIEncoding =
+         PositionIndependent ? dwarf::DW_EH_PE_pcrel : dwarf::DW_EH_PE_absptr;
+     break;
++  case Triple::xtensa:
++    FDECFIEncoding = dwarf::DW_EH_PE_sdata4;
++    break;
+   default:
+     FDECFIEncoding = dwarf::DW_EH_PE_pcrel | dwarf::DW_EH_PE_sdata4;
+     break;
+diff --git a/llvm/lib/Target/Xtensa/CMakeLists.txt b/llvm/lib/Target/Xtensa/CMakeLists.txt
+index 75678b8fe126..17ef1f213ce9 100644
+--- a/llvm/lib/Target/Xtensa/CMakeLists.txt
++++ b/llvm/lib/Target/Xtensa/CMakeLists.txt
+@@ -3,6 +3,7 @@ add_llvm_component_group(Xtensa)
+ set(LLVM_TARGET_DEFINITIONS Xtensa.td)
+ 
+ tablegen(LLVM XtensaGenInstrInfo.inc -gen-instr-info)
++tablegen(LLVM XtensaGenMCCodeEmitter.inc -gen-emitter)
+ tablegen(LLVM XtensaGenRegisterInfo.inc -gen-register-info)
+ 
+ add_public_tablegen_target(XtensaCommonTableGen)
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+index 0febab437acb..b94e4e9c7923 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+@@ -1,4 +1,8 @@
+ add_llvm_component_library(LLVMXtensaDesc
++  XtensaAsmBackend.cpp
++  XtensaELFObjectWriter.cpp
++  XtensaMCAsmInfo.cpp
++  XtensaMCCodeEmitter.cpp
+   XtensaMCTargetDesc.cpp
+ 
+   LINK_COMPONENTS
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp
+new file mode 100644
+index 000000000000..7f711993dd5c
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaAsmBackend.cpp
+@@ -0,0 +1,121 @@
++//===-- XtensaMCAsmBackend.cpp - Xtensa assembler backend -----------------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "MCTargetDesc/XtensaMCTargetDesc.h"
++#include "llvm/MC/MCAsmBackend.h"
++#include "llvm/MC/MCAssembler.h"
++#include "llvm/MC/MCContext.h"
++#include "llvm/MC/MCELFObjectWriter.h"
++#include "llvm/MC/MCFixupKindInfo.h"
++#include "llvm/MC/MCInst.h"
++#include "llvm/MC/MCObjectWriter.h"
++#include "llvm/MC/MCSubtargetInfo.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++namespace llvm {
++class MCObjectTargetWriter;
++class XtensaMCAsmBackend : public MCAsmBackend {
++  uint8_t OSABI;
++  bool IsLittleEndian;
++
++public:
++  XtensaMCAsmBackend(uint8_t osABI, bool isLE)
++      : MCAsmBackend(support::little), OSABI(osABI), IsLittleEndian(isLE) {}
++
++  unsigned getNumFixupKinds() const override { return 1; }
++  const MCFixupKindInfo &getFixupKindInfo(MCFixupKind Kind) const override;
++  void applyFixup(const MCAssembler &Asm, const MCFixup &Fixup,
++                  const MCValue &Target, MutableArrayRef<char> Data,
++                  uint64_t Value, bool IsResolved,
++                  const MCSubtargetInfo *STI) const override;
++  bool mayNeedRelaxation(const MCInst &Inst,
++                         const MCSubtargetInfo &STI) const override;
++  bool fixupNeedsRelaxation(const MCFixup &Fixup, uint64_t Value,
++                            const MCRelaxableFragment *Fragment,
++                            const MCAsmLayout &Layout) const override;
++  void relaxInstruction(MCInst &Inst,
++                        const MCSubtargetInfo &STI) const override;
++  bool writeNopData(raw_ostream &OS, uint64_t Count,
++                    const MCSubtargetInfo *STI) const override;
++
++  std::unique_ptr<MCObjectTargetWriter> createObjectTargetWriter() const override {
++    return createXtensaObjectWriter(OSABI, IsLittleEndian);
++  }
++};
++} // namespace llvm
++
++const MCFixupKindInfo &
++XtensaMCAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
++  return MCAsmBackend::getFixupKindInfo(MCFixupKind::FK_NONE);
++}
++void XtensaMCAsmBackend::applyFixup(const MCAssembler &Asm,
++                                    const MCFixup &Fixup, const MCValue &Target,
++                                    MutableArrayRef<char> Data, uint64_t Value,
++                                    bool IsResolved,
++                                    const MCSubtargetInfo *STI) const {}
++
++bool XtensaMCAsmBackend::mayNeedRelaxation(const MCInst &Inst,
++                                           const MCSubtargetInfo &STI) const {
++  return false;
++}
++
++bool XtensaMCAsmBackend::fixupNeedsRelaxation(
++    const MCFixup &Fixup, uint64_t Value, const MCRelaxableFragment *Fragment,
++    const MCAsmLayout &Layout) const {
++  return false;
++}
++
++void XtensaMCAsmBackend::relaxInstruction(MCInst &Inst,
++                                          const MCSubtargetInfo &STI) const {}
++
++bool XtensaMCAsmBackend::writeNopData(raw_ostream &OS, uint64_t Count,
++                                      const MCSubtargetInfo *STI) const {
++  uint64_t NumNops24b = Count / 3;
++
++  for (uint64_t i = 0; i != NumNops24b; ++i) {
++    // Currently just little-endian machine supported,
++    // but probably big-endian will be also implemented in future
++    if (IsLittleEndian) {
++      OS.write("\xf0", 1);
++      OS.write("\x20", 1);
++      OS.write("\0x00", 1);
++    } else {
++      report_fatal_error("Big-endian mode currently is not supported!");
++    }
++    Count -= 3;
++  }
++
++  // TODO maybe function should return error if (Count > 0)
++  switch (Count) {
++  default:
++    break;
++  case 1:
++    OS.write("\0", 1);
++    break;
++  case 2:
++    // NOP.N instruction
++    OS.write("\x3d", 1);
++    OS.write("\xf0", 1);
++    break;
++  }
++
++  return true;
++}
++
++MCAsmBackend *llvm::createXtensaMCAsmBackend(const Target &T,
++                                             const MCSubtargetInfo &STI,
++                                             const MCRegisterInfo &MRI,
++                                             const MCTargetOptions &Options) {
++  uint8_t OSABI =
++      MCELFObjectTargetWriter::getOSABI(STI.getTargetTriple().getOS());
++  return new llvm::XtensaMCAsmBackend(OSABI, true);
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp
+new file mode 100644
+index 000000000000..d407e188ab81
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaELFObjectWriter.cpp
+@@ -0,0 +1,60 @@
++//===-- XtensaMCObjectWriter.cpp - Xtensa ELF writer ----------------------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "MCTargetDesc/XtensaMCTargetDesc.h"
++#include "llvm/ADT/STLExtras.h"
++#include "llvm/BinaryFormat/ELF.h"
++#include "llvm/MC/MCELFObjectWriter.h"
++#include "llvm/MC/MCExpr.h"
++#include "llvm/MC/MCFixup.h"
++#include "llvm/MC/MCObjectWriter.h"
++#include "llvm/MC/MCValue.h"
++#include "llvm/Support/ErrorHandling.h"
++#include <cassert>
++#include <cstdint>
++
++using namespace llvm;
++
++namespace {
++class XtensaObjectWriter : public MCELFObjectTargetWriter {
++public:
++  XtensaObjectWriter(uint8_t OSABI);
++
++  virtual ~XtensaObjectWriter();
++
++protected:
++  unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
++                        const MCFixup &Fixup, bool IsPCRel) const override;
++  bool needsRelocateWithSymbol(const MCSymbol &Sym,
++                               unsigned Type) const override;
++};
++} // namespace
++
++XtensaObjectWriter::XtensaObjectWriter(uint8_t OSABI)
++    : MCELFObjectTargetWriter(false, OSABI, ELF::EM_XTENSA,
++                              /*HasRelocationAddend=*/true) {}
++
++XtensaObjectWriter::~XtensaObjectWriter() {}
++
++unsigned XtensaObjectWriter::getRelocType(MCContext &Ctx, const MCValue &Target,
++                                          const MCFixup &Fixup,
++                                          bool IsPCRel) const {
++  report_fatal_error("invalid fixup kind!");
++}
++
++std::unique_ptr<MCObjectTargetWriter>
++llvm::createXtensaObjectWriter(uint8_t OSABI, bool IsLittleEndian) {
++  return std::make_unique<XtensaObjectWriter>(OSABI);
++}
++
++bool XtensaObjectWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
++                                                 unsigned Type) const {
++  return false;
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.cpp
+new file mode 100644
+index 000000000000..ce80722230bb
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.cpp
+@@ -0,0 +1,32 @@
++//===-- XtensaMCAsmInfo.cpp - Xtensa Asm Properties -----------------------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file contains the declarations of the XtensaMCAsmInfo properties.
++//
++//===----------------------------------------------------------------------===//
++
++#include "XtensaMCAsmInfo.h"
++#include "llvm/ADT/Triple.h"
++
++using namespace llvm;
++
++XtensaMCAsmInfo::XtensaMCAsmInfo(const Triple &TT) {
++  CodePointerSize = 4;
++  CalleeSaveStackSlotSize = 4;
++  PrivateGlobalPrefix = ".L";
++  CommentString = "#";
++  ZeroDirective = "\t.space\t";
++  Data64bitsDirective = "\t.quad\t";
++  GlobalDirective = "\t.global\t";
++  UsesELFSectionDirectiveForBSS = true;
++  SupportsDebugInformation = true;
++  ExceptionsType = ExceptionHandling::DwarfCFI;
++  AlignmentIsInBytes = false;
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.h
+new file mode 100644
+index 000000000000..a86a95f6be37
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.h
+@@ -0,0 +1,30 @@
++//===-- XtensaMCAsmInfo.h - Xtensa Asm Info --------------------*- C++ -*--===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file contains the declaration of the XtensaMCAsmInfo class.
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSATARGETASMINFO_H
++#define LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSATARGETASMINFO_H
++
++#include "llvm/MC/MCAsmInfoELF.h"
++
++namespace llvm {
++class Triple;
++
++class XtensaMCAsmInfo : public MCAsmInfoELF {
++public:
++  explicit XtensaMCAsmInfo(const Triple &TT);
++};
++
++} // namespace llvm
++
++#endif // LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSATARGETASMINFO_H
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+new file mode 100644
+index 000000000000..7c7751d5cf07
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+@@ -0,0 +1,129 @@
++//===-- XtensaMCCodeEmitter.cpp - Convert Xtensa Code to Machine Code -----===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file implements the XtensaMCCodeEmitter class.
++//
++//===----------------------------------------------------------------------===//
++
++#include "MCTargetDesc/XtensaMCTargetDesc.h"
++#include "llvm/MC/MCCodeEmitter.h"
++#include "llvm/MC/MCContext.h"
++#include "llvm/MC/MCExpr.h"
++#include "llvm/MC/MCInst.h"
++#include "llvm/MC/MCInstrInfo.h"
++#include "llvm/MC/MCRegisterInfo.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "mccodeemitter"
++
++namespace {
++class XtensaMCCodeEmitter : public MCCodeEmitter {
++  const MCInstrInfo &MCII;
++  MCContext &Ctx;
++  bool IsLittleEndian;
++
++public:
++  XtensaMCCodeEmitter(const MCInstrInfo &mcii, MCContext &ctx, bool isLE)
++      : MCII(mcii), Ctx(ctx), IsLittleEndian(isLE) {}
++
++  ~XtensaMCCodeEmitter() {}
++
++  // OVerride MCCodeEmitter.
++  void encodeInstruction(const MCInst &MI, raw_ostream &OS,
++                         SmallVectorImpl<MCFixup> &Fixups,
++                         const MCSubtargetInfo &STI) const override;
++
++private:
++  // Automatically generated by TableGen.
++  uint64_t getBinaryCodeForInstr(const MCInst &MI,
++                                 SmallVectorImpl<MCFixup> &Fixups,
++                                 const MCSubtargetInfo &STI) const;
++
++  // Called by the TableGen code to get the binary encoding of operand
++  // MO in MI.  Fixups is the list of fixups against MI.
++  uint32_t getMachineOpValue(const MCInst &MI, const MCOperand &MO,
++                             SmallVectorImpl<MCFixup> &Fixups,
++                             const MCSubtargetInfo &STI) const;
++
++  uint32_t getImm8OpValue(const MCInst &MI, unsigned OpNo,
++                          SmallVectorImpl<MCFixup> &Fixups,
++                          const MCSubtargetInfo &STI) const;
++
++  uint32_t getImm8_sh8OpValue(const MCInst &MI, unsigned OpNo,
++                              SmallVectorImpl<MCFixup> &Fixups,
++                              const MCSubtargetInfo &STI) const;
++};
++} // namespace
++
++MCCodeEmitter *llvm::createXtensaMCCodeEmitter(const MCInstrInfo &MCII,
++                                               MCContext &Ctx) {
++  return new XtensaMCCodeEmitter(MCII, Ctx, true);
++}
++
++void XtensaMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
++                                            SmallVectorImpl<MCFixup> &Fixups,
++                                            const MCSubtargetInfo &STI) const {
++  uint64_t Bits = getBinaryCodeForInstr(MI, Fixups, STI);
++  unsigned Size = MCII.get(MI.getOpcode()).getSize();
++
++  if (IsLittleEndian) {
++    // Little-endian insertion of Size bytes.
++    unsigned ShiftValue = 0;
++    for (unsigned I = 0; I != Size; ++I) {
++      OS << uint8_t(Bits >> ShiftValue);
++      ShiftValue += 8;
++    }
++  } else {
++    // TODO Big-endian insertion of Size bytes.
++    report_fatal_error("Big-endian mode currently is not supported!");
++  }
++}
++
++uint32_t
++XtensaMCCodeEmitter::getMachineOpValue(const MCInst &MI, const MCOperand &MO,
++                                       SmallVectorImpl<MCFixup> &Fixups,
++                                       const MCSubtargetInfo &STI) const {
++  if (MO.isReg())
++    return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg());
++  if (MO.isImm()) {
++    uint32_t res = static_cast<uint32_t>(MO.getImm());
++    return res;
++  }
++
++  report_fatal_error("Unhandled expression!");
++  return 0;
++}
++
++uint32_t XtensaMCCodeEmitter::getImm8OpValue(const MCInst &MI, unsigned OpNo,
++                                             SmallVectorImpl<MCFixup> &Fixups,
++                                             const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  int32_t Res = MO.getImm();
++
++  assert(((Res >= -128) && (Res <= 127)) && "Unexpected operand value!");
++
++  return (Res & 0xff);
++}
++
++uint32_t
++XtensaMCCodeEmitter::getImm8_sh8OpValue(const MCInst &MI, unsigned OpNo,
++                                        SmallVectorImpl<MCFixup> &Fixups,
++                                        const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  int32_t Res = MO.getImm();
++
++  assert(((Res >= -32768) && (Res <= 32512) && ((Res & 0xff) == 0)) &&
++         "Unexpected operand value!");
++
++  return (Res & 0xffff);
++}
++
++#include "XtensaGenMCCodeEmitter.inc"
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+index 1b9190f83e9d..f35ba25b7bb5 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+@@ -8,6 +8,60 @@
+ //
+ //===----------------------------------------------------------------------===//
+ #include "XtensaMCTargetDesc.h"
++#include "XtensaMCAsmInfo.h"
++#include "TargetInfo/XtensaTargetInfo.h"
++#include "llvm/ADT/STLExtras.h"
++#include "llvm/MC/MCAsmInfo.h"
++#include "llvm/MC/MCInstrInfo.h"
++#include "llvm/MC/MCRegisterInfo.h"
++#include "llvm/MC/MCStreamer.h"
++#include "llvm/MC/MCSubtargetInfo.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/ErrorHandling.h"
+ 
+-// We need to define this function for linking succeed
+-extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTargetMC() {}
++#define GET_INSTRINFO_MC_DESC
++#include "XtensaGenInstrInfo.inc"
++
++#define GET_REGINFO_MC_DESC
++#include "XtensaGenRegisterInfo.inc"
++
++using namespace llvm;
++
++static MCAsmInfo *createXtensaMCAsmInfo(const MCRegisterInfo &MRI,
++                                        const Triple &TT,
++                                        const MCTargetOptions &Options) {
++  MCAsmInfo *MAI = new XtensaMCAsmInfo(TT);
++  return MAI;
++}
++
++static MCInstrInfo *createXtensaMCInstrInfo() {
++  MCInstrInfo *X = new MCInstrInfo();
++  InitXtensaMCInstrInfo(X);
++  return X;
++}
++
++static MCRegisterInfo *createXtensaMCRegisterInfo(const Triple &TT) {
++  MCRegisterInfo *X = new MCRegisterInfo();
++  InitXtensaMCRegisterInfo(X, Xtensa::SP);
++  return X;
++}
++
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTargetMC() {
++  // Register the MCAsmInfo.
++  TargetRegistry::RegisterMCAsmInfo(getTheXtensaTarget(), createXtensaMCAsmInfo);
++
++  // Register the MCCodeEmitter.
++  TargetRegistry::RegisterMCCodeEmitter(getTheXtensaTarget(),
++                                        createXtensaMCCodeEmitter);
++
++  // Register the MCInstrInfo.
++  TargetRegistry::RegisterMCInstrInfo(getTheXtensaTarget(), createXtensaMCInstrInfo);
++
++  // Register the MCRegisterInfo.
++  TargetRegistry::RegisterMCRegInfo(getTheXtensaTarget(),
++                                    createXtensaMCRegisterInfo);
++
++  // Register the MCAsmBackend.
++  TargetRegistry::RegisterMCAsmBackend(getTheXtensaTarget(),
++                                       createXtensaMCAsmBackend);
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h
+index 05400d0093d6..f67f373530fc 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.h
+@@ -14,5 +14,44 @@
+ 
+ #ifndef LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCTARGETDESC_H
+ #define LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCTARGETDESC_H
++#include "llvm/Support/DataTypes.h"
++#include <memory>
++
++namespace llvm {
++
++class MCAsmBackend;
++class MCCodeEmitter;
++class MCContext;
++class MCInstrInfo;
++class MCObjectTargetWriter;
++class MCObjectWriter;
++class MCRegisterInfo;
++class MCSubtargetInfo;
++class MCTargetOptions;
++class StringRef;
++class Target;
++class raw_ostream;
++
++extern Target TheXtensaTarget;
++
++MCCodeEmitter *createXtensaMCCodeEmitter(const MCInstrInfo &MCII,
++                                         MCContext &Ctx);
++
++MCAsmBackend *createXtensaMCAsmBackend(const Target &T,
++                                       const MCSubtargetInfo &STI,
++                                       const MCRegisterInfo &MRI,
++                                       const MCTargetOptions &Options);
++std::unique_ptr<MCObjectTargetWriter>
++createXtensaObjectWriter(uint8_t OSABI, bool IsLittleEndian);
++} // end namespace llvm
++
++// Defines symbolic names for Xtensa registers.
++// This defines a mapping from register name to register number.
++#define GET_REGINFO_ENUM
++#include "XtensaGenRegisterInfo.inc"
++
++// Defines symbolic names for the Xtensa instructions.
++#define GET_INSTRINFO_ENUM
++#include "XtensaGenInstrInfo.inc"
+ 
+ #endif // LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAMCTARGETDESC_H
+diff --git a/llvm/lib/Target/Xtensa/XtensaOperands.td b/llvm/lib/Target/Xtensa/XtensaOperands.td
+index 01ee274aca02..9a1ed0356cdb 100644
+--- a/llvm/lib/Target/Xtensa/XtensaOperands.td
++++ b/llvm/lib/Target/Xtensa/XtensaOperands.td
+@@ -23,10 +23,14 @@ class Immediate<ValueType vt, code pred, string asmop>
+ 
+ // imm8 predicate - Immediate in the range [-128,127]
+ def Imm8_AsmOperand : ImmAsmOperand<"Imm8">;
+-def imm8 : Immediate<i32, [{ return Imm >= -128 && Imm <= 127; }], "Imm8_AsmOperand">;
++def imm8 : Immediate<i32, [{ return Imm >= -128 && Imm <= 127; }], "Imm8_AsmOperand"> {
++  let EncoderMethod = "getImm8OpValue";
++}
+ 
+ // imm8_sh8 predicate - Immediate in the range [-32768,32512] with (bits[7-0] == 0)
+ // imm8 value left shifted by 8 bits
+ def Imm8_sh8_AsmOperand : ImmAsmOperand<"Imm8_sh8">;
+ def imm8_sh8 : Immediate<i32, [{ return Imm >= -32768 && Imm <= 32512 && ((Imm & 0xFF) == 0); }],
+-                        "Imm8_sh8_AsmOperand">;
++                        "Imm8_sh8_AsmOperand"> {
++  let EncoderMethod = "getImm8_sh8OpValue";
++}
+-- 
+2.34.1
+

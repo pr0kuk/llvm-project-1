@@ -1,0 +1,615 @@
+From 2758a01395148790377af95606c623405b08f0e6 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:55:06 +0100
+Subject: [PATCH] [Xtensa 7/10] Add Xtensa instruction printer
+
+Add printer for current instructions and operands subsets.
+Also add basic tests of the Xtensa instructions.
+
+Differential Revision: https://reviews.llvm.org/D64833
+---
+ llvm/lib/Target/Xtensa/CMakeLists.txt         |   4 +
+ .../Target/Xtensa/MCTargetDesc/CMakeLists.txt |   1 +
+ .../Xtensa/MCTargetDesc/XtensaInstPrinter.cpp | 107 ++++++++++++++++++
+ .../Xtensa/MCTargetDesc/XtensaInstPrinter.h   |  52 +++++++++
+ .../MCTargetDesc/XtensaMCTargetDesc.cpp       |  25 ++++
+ llvm/lib/Target/Xtensa/Xtensa.td              |   6 +
+ llvm/test/MC/Xtensa/Core/arith.s              |  84 ++++++++++++++
+ llvm/test/MC/Xtensa/Core/invalid.s            |  52 +++++++++
+ llvm/test/MC/Xtensa/Core/memorder.s           |  16 +++
+ llvm/test/MC/Xtensa/Core/move.s               |  26 +++++
+ llvm/test/MC/Xtensa/Core/processor-control.s  |  31 +++++
+ llvm/test/MC/Xtensa/Misc/elf-header.s         |  31 +++++
+ llvm/test/MC/Xtensa/lit.local.cfg             |   2 +
+ 13 files changed, 437 insertions(+)
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+ create mode 100644 llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+ create mode 100644 llvm/test/MC/Xtensa/Core/arith.s
+ create mode 100644 llvm/test/MC/Xtensa/Core/invalid.s
+ create mode 100644 llvm/test/MC/Xtensa/Core/memorder.s
+ create mode 100644 llvm/test/MC/Xtensa/Core/move.s
+ create mode 100644 llvm/test/MC/Xtensa/Core/processor-control.s
+ create mode 100644 llvm/test/MC/Xtensa/Misc/elf-header.s
+ create mode 100644 llvm/test/MC/Xtensa/lit.local.cfg
+
+diff --git a/llvm/lib/Target/Xtensa/CMakeLists.txt b/llvm/lib/Target/Xtensa/CMakeLists.txt
+index c142cfb00144..62731a2cce34 100644
+--- a/llvm/lib/Target/Xtensa/CMakeLists.txt
++++ b/llvm/lib/Target/Xtensa/CMakeLists.txt
+@@ -3,6 +3,7 @@ add_llvm_component_group(Xtensa)
+ set(LLVM_TARGET_DEFINITIONS Xtensa.td)
+ 
+ tablegen(LLVM XtensaGenAsmMatcher.inc -gen-asm-matcher)
++tablegen(LLVM XtensaGenAsmWriter.inc -gen-asm-writer)
+ tablegen(LLVM XtensaGenInstrInfo.inc -gen-instr-info)
+ tablegen(LLVM XtensaGenMCCodeEmitter.inc -gen-emitter)
+ tablegen(LLVM XtensaGenRegisterInfo.inc -gen-register-info)
+@@ -14,10 +15,13 @@ add_llvm_target(XtensaCodeGen
+   XtensaTargetMachine.cpp
+ 
+   LINK_COMPONENTS
++  AsmPrinter
+   CodeGen
+   Core
++  MC
+   Support
+   Target
++  XtensaDesc
+   XtensaInfo
+ 
+   ADD_TO_COMPONENT
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+index b94e4e9c7923..3dad67b1e9a6 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ add_llvm_component_library(LLVMXtensaDesc
+   XtensaAsmBackend.cpp
+   XtensaELFObjectWriter.cpp
++  XtensaInstPrinter.cpp
+   XtensaMCAsmInfo.cpp
+   XtensaMCCodeEmitter.cpp
+   XtensaMCTargetDesc.cpp
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+new file mode 100644
+index 000000000000..a97f2977b92a
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+@@ -0,0 +1,107 @@
++//===- XtensaInstPrinter.cpp - Convert Xtensa MCInst to asm syntax --------===//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This class prints an Xtensa MCInst to a .s file.
++//
++//===----------------------------------------------------------------------===//
++
++#include "XtensaInstPrinter.h"
++#include "llvm/CodeGen/MachineOperand.h"
++#include "llvm/MC/MCExpr.h"
++#include "llvm/MC/MCInstrInfo.h"
++#include "llvm/MC/MCSymbol.h"
++#include "llvm/Support/Casting.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "asm-printer"
++
++#include "XtensaGenAsmWriter.inc"
++
++static void printExpr(const MCExpr *Expr, raw_ostream &OS) {
++  int Offset = 0;
++  const MCSymbolRefExpr *SRE;
++
++  if (!(SRE = cast<MCSymbolRefExpr>(Expr)))
++    assert(false && "Unexpected MCExpr type.");
++
++  MCSymbolRefExpr::VariantKind Kind = SRE->getKind();
++
++  switch (Kind) {
++  case MCSymbolRefExpr::VK_None:
++    break;
++  // TODO
++  default:
++    report_fatal_error("Invalid kind!");
++  }
++
++  OS << SRE->getSymbol();
++
++  if (Offset) {
++    if (Offset > 0)
++      OS << '+';
++    OS << Offset;
++  }
++
++  if (Kind != MCSymbolRefExpr::VK_None)
++    OS << ')';
++}
++
++void XtensaInstPrinter::printOperand(const MCOperand &MC, raw_ostream &O) {
++  if (MC.isReg())
++    O << getRegisterName(MC.getReg());
++  else if (MC.isImm())
++    O << MC.getImm();
++  else if (MC.isExpr())
++    printExpr(MC.getExpr(), O);
++  else
++    report_fatal_error("Invalid operand");
++}
++
++void XtensaInstPrinter::printInst(const MCInst *MI, uint64_t Address,
++                                  StringRef Annot, const MCSubtargetInfo &STI,
++                                  raw_ostream &O) {
++  printInstruction(MI, Address, O);
++  printAnnotation(O, Annot);
++}
++
++void XtensaInstPrinter::printRegName(raw_ostream &O, unsigned RegNo) const {
++  O << getRegisterName(RegNo);
++}
++
++void XtensaInstPrinter::printOperand(const MCInst *MI, int OpNum,
++                                     raw_ostream &O) {
++  printOperand(MI->getOperand(OpNum), O);
++}
++
++void XtensaInstPrinter::printImm8_AsmOperand(const MCInst *MI, int OpNum,
++                                             raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert(isInt<8>(Value) &&
++           "Invalid argument, value must be in ranges [-128,127]");
++    O << Value;
++  } else {
++    printOperand(MI, OpNum, O);
++  }
++}
++
++void XtensaInstPrinter::printImm8_sh8_AsmOperand(const MCInst *MI, int OpNum,
++                                                 raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((isInt<16>(Value) && ((Value & 0xFF) == 0)) &&
++           "Invalid argument, value must be multiples of 256 in range "
++           "[-32768,32512]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+new file mode 100644
+index 000000000000..fcadfad1cc50
+--- /dev/null
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+@@ -0,0 +1,52 @@
++//===- XtensaInstPrinter.h - Convert Xtensa MCInst to asm syntax -*- C++ -*-==//
++//
++//                     The LLVM Compiler Infrastructure
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This class prints an Xtensa MCInst to a .s file.
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAINSTPRINTER_H
++#define LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAINSTPRINTER_H
++
++#include "llvm/MC/MCInstPrinter.h"
++#include "llvm/Support/Compiler.h"
++
++namespace llvm {
++class MCOperand;
++
++class XtensaInstPrinter : public MCInstPrinter {
++public:
++  XtensaInstPrinter(const MCAsmInfo &MAI, const MCInstrInfo &MII,
++                    const MCRegisterInfo &MRI)
++      : MCInstPrinter(MAI, MII, MRI) {}
++
++  // Automatically generated by tblgen.
++  std::pair<const char *, uint64_t> getMnemonic(const MCInst *MI) override;
++  void printInstruction(const MCInst *MI, uint64_t Address, raw_ostream &O);
++  static const char *getRegisterName(unsigned RegNo);
++
++  // Print the given operand.
++  static void printOperand(const MCOperand &MO, raw_ostream &O);
++
++  // Override MCInstPrinter.
++  void printRegName(raw_ostream &O, unsigned RegNo) const override;
++  void printInst(const MCInst *MI, uint64_t Address, StringRef Annot,
++                 const MCSubtargetInfo &STI, raw_ostream &O) override;
++
++private:
++  // Print various types of operand.
++  void printOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++
++  void printImm8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printImm8_sh8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++};
++} // end namespace llvm
++
++#endif /* LLVM_LIB_TARGET_XTENSA_MCTARGETDESC_XTENSAINSTPRINTER_H */
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+index f35ba25b7bb5..48674d15bdfb 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCTargetDesc.cpp
+@@ -8,6 +8,7 @@
+ //
+ //===----------------------------------------------------------------------===//
+ #include "XtensaMCTargetDesc.h"
++#include "XtensaInstPrinter.h"
+ #include "XtensaMCAsmInfo.h"
+ #include "TargetInfo/XtensaTargetInfo.h"
+ #include "llvm/ADT/STLExtras.h"
+@@ -25,6 +26,9 @@
+ #define GET_REGINFO_MC_DESC
+ #include "XtensaGenRegisterInfo.inc"
+ 
++#define GET_SUBTARGETINFO_MC_DESC
++#include "XtensaGenSubtargetInfo.inc"
++
+ using namespace llvm;
+ 
+ static MCAsmInfo *createXtensaMCAsmInfo(const MCRegisterInfo &MRI,
+@@ -40,12 +44,25 @@ static MCInstrInfo *createXtensaMCInstrInfo() {
+   return X;
+ }
+ 
++static MCInstPrinter *createXtensaMCInstPrinter(const Triple &TT,
++                                                unsigned SyntaxVariant,
++                                                const MCAsmInfo &MAI,
++                                                const MCInstrInfo &MII,
++                                                const MCRegisterInfo &MRI) {
++  return new XtensaInstPrinter(MAI, MII, MRI);
++}
++
+ static MCRegisterInfo *createXtensaMCRegisterInfo(const Triple &TT) {
+   MCRegisterInfo *X = new MCRegisterInfo();
+   InitXtensaMCRegisterInfo(X, Xtensa::SP);
+   return X;
+ }
+ 
++static MCSubtargetInfo *
++createXtensaMCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
++  return createXtensaMCSubtargetInfoImpl(TT, CPU, CPU, FS);
++}
++
+ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTargetMC() {
+   // Register the MCAsmInfo.
+   TargetRegistry::RegisterMCAsmInfo(getTheXtensaTarget(), createXtensaMCAsmInfo);
+@@ -57,10 +74,18 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeXtensaTargetMC() {
+   // Register the MCInstrInfo.
+   TargetRegistry::RegisterMCInstrInfo(getTheXtensaTarget(), createXtensaMCInstrInfo);
+ 
++  // Register the MCInstPrinter.
++  TargetRegistry::RegisterMCInstPrinter(getTheXtensaTarget(),
++                                        createXtensaMCInstPrinter);
++
+   // Register the MCRegisterInfo.
+   TargetRegistry::RegisterMCRegInfo(getTheXtensaTarget(),
+                                     createXtensaMCRegisterInfo);
+ 
++  // Register the MCSubtargetInfo.
++  TargetRegistry::RegisterMCSubtargetInfo(getTheXtensaTarget(),
++                                          createXtensaMCSubtargetInfo);
++
+   // Register the MCAsmBackend.
+   TargetRegistry::RegisterMCAsmBackend(getTheXtensaTarget(),
+                                        createXtensaMCAsmBackend);
+diff --git a/llvm/lib/Target/Xtensa/Xtensa.td b/llvm/lib/Target/Xtensa/Xtensa.td
+index b1c436b1c5f3..b953540be94d 100644
+--- a/llvm/lib/Target/Xtensa/Xtensa.td
++++ b/llvm/lib/Target/Xtensa/Xtensa.td
+@@ -51,7 +51,13 @@ def XtensaAsmParser : AsmParser {
+   let ShouldEmitMatchRegisterAltName = 1;
+ }
+ 
++def XtensaInstPrinter : AsmWriter {
++  string AsmWriterClassName  = "InstPrinter";
++}
++
+ def Xtensa : Target {
+   let InstructionSet = XtensaInstrInfo;
++  let AssemblyWriters = [XtensaInstPrinter];
+   let AssemblyParsers = [XtensaAsmParser];
+ }
++
+diff --git a/llvm/test/MC/Xtensa/Core/arith.s b/llvm/test/MC/Xtensa/Core/arith.s
+new file mode 100644
+index 000000000000..2f3146b9533c
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/arith.s
+@@ -0,0 +1,84 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRR
++# CHECK-INST: abs a5, a6
++# CHECK: encoding: [0x60,0x51,0x60]
++abs a5, a6
++
++# Instruction format RRR
++# CHECK-INST: add a3, a9, a4
++# CHECK: encoding: [0x40,0x39,0x80]
++add a3, a9, a4
++
++# CHECK-INST: add a15, a9, a1
++# CHECK: encoding: [0x10,0xf9,0x80]
++add a15, a9, sp
++
++# Instruction format RRI8
++# CHECK-INST: addi a8, a1, -128
++# CHECK: encoding: [0x82,0xc1,0x80]
++addi a8, sp, -128
++
++# CHECK-INST: addi a8, a1, -12
++# CHECK: encoding: [0x82,0xc1,0xf4]
++addi a8, a1, -12
++
++# Instruction format RRI8
++# CHECK-INST:  addmi a1, a2, 32512
++# CHECK: encoding: [0x12,0xd2,0x7f]
++addmi a1, a2, 32512
++
++# Instruction format RRR
++# CHECK-INST: addx2 a2, a1, a5
++# CHECK: encoding: [0x50,0x21,0x90]
++addx2 a2, sp, a5
++
++# Instruction format RRR
++# CHECK-INST: addx4 a3, a1, a6
++# CHECK: encoding: [0x60,0x31,0xa0]
++addx4 a3, sp, a6
++
++# Instruction format RRR
++# CHECK-INST: addx8 a4, a1, a7
++# CHECK: encoding: [0x70,0x41,0xb0]
++addx8 a4, sp, a7
++
++# Instruction format RRR
++# CHECK-INST: neg a1, a3
++# CHECK: encoding: [0x30,0x10,0x60]
++neg a1, a3
++
++# Instruction format RRR
++# CHECK-INST: or a4, a5, a6
++# CHECK: encoding: [0x60,0x45,0x20]
++or a4, a5, a6
++
++# Instruction format RRR
++# CHECK-INST: sub a8, a2, a1
++# CHECK: encoding: [0x10,0x82,0xc0]
++sub  a8, a2, a1
++
++# Instruction format RRR
++# CHECK-INST: subx2 a2, a1, a5
++# CHECK: encoding: [0x50,0x21,0xd0]
++subx2 a2, sp, a5
++
++# Instruction format RRR
++# CHECK-INST: subx4 a3, a1, a6
++# CHECK: encoding: [0x60,0x31,0xe0]
++subx4 a3, sp, a6
++
++# Instruction format RRR
++# CHECK-INST: subx8 a4, a1, a7
++# CHECK: encoding: [0x70,0x41,0xf0]
++subx8 a4, sp, a7
++
++# Instruction format RRR
++# CHECK-INST: xor a6, a4, a5
++# CHECK: encoding: [0x50,0x64,0x30]
++xor a6, a4, a5
+diff --git a/llvm/test/MC/Xtensa/Core/invalid.s b/llvm/test/MC/Xtensa/Core/invalid.s
+new file mode 100644
+index 000000000000..9fd12adb8577
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/invalid.s
+@@ -0,0 +1,52 @@
++# RUN: not llvm-mc -triple xtensa %s 2>&1 | FileCheck %s
++
++# Out of range immediates
++
++LBL0:
++
++# imm8
++addi a1, a2, 300
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [-128, 127]
++
++addi a1, a2, -129
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [-128, 127]
++
++# imm8_sh8
++addmi a1, a2, 33
++# CHECK: :[[#@LINE-1]]:15: error: expected immediate in range [-32768, 32512], first 8 bits should be zero
++
++# Invalid number of operands
++addi a1, a2
++# CHECK: :[[#@LINE-1]]:1: error: too few operands for instruction
++addi a1, a2, 4, 4
++# CHECK: :[[#@LINE-1]]:17: error: invalid operand for instruction
++
++# Invalid mnemonics
++aaa a10, a12
++# CHECK: :[[#@LINE-1]]:1: error: unrecognized instruction mnemonic
++
++# Invalid operand types
++and sp, a2, 10
++# CHECK: :[[#@LINE-1]]:13: error: invalid operand for instruction
++addi sp, a1, a2
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [-128, 127]
++
++# Invalid register names
++# Instruction format RRR
++or r2, sp, a3
++# CHECK: :[[#@LINE-1]]:4: error: invalid operand for instruction
++and a1, r10, a3
++# CHECK: :[[#@LINE-1]]:9: error: invalid operand for instruction
++sub a1, sp, a100
++# CHECK: :[[#@LINE-1]]:13: error: invalid operand for instruction
++
++# Instruction format RRI8
++addi a101, sp, 10
++# CHECK: :[[#@LINE-1]]:6: error: invalid operand for instruction
++addi a1, r10, 10
++# CHECK: :[[#@LINE-1]]:10: error: invalid operand for instruction
++
++# Invalid operands order
++# Instruction format RRI8
++addi a1, 10, a2
++# CHECK: :[[#@LINE-1]]:10: error: invalid operand for instruction
+diff --git a/llvm/test/MC/Xtensa/Core/memorder.s b/llvm/test/MC/Xtensa/Core/memorder.s
+new file mode 100644
+index 000000000000..bf1ebac159b2
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/memorder.s
+@@ -0,0 +1,16 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRR
++# CHECK-INST: extw
++# CHECK: encoding: [0xd0,0x20,0x00]
++extw
++
++# Instruction format RRR
++# CHECK-INST: memw
++# CHECK: encoding: [0xc0,0x20,0x00]
++memw
+diff --git a/llvm/test/MC/Xtensa/Core/move.s b/llvm/test/MC/Xtensa/Core/move.s
+new file mode 100644
+index 000000000000..8f9ed581f47f
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/move.s
+@@ -0,0 +1,26 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRR
++# CHECK-INST: moveqz a2, a3, a4
++# CHECK: encoding: [0x40,0x23,0x83]
++moveqz a2, a3, a4
++
++# Instruction format RRR
++# CHECK-INST: movgez a3, a11, a12
++# CHECK: encoding: [0xc0,0x3b,0xb3]
++movgez a3, a11, a12
++
++# Instruction format RRR
++# CHECK-INST: movltz a7, a8, a9
++# CHECK: encoding: [0x90,0x78,0xa3]
++movltz a7, a8, a9
++
++# Instruction format RRR
++# CHECK-INST: movnez a10, a11, a12
++# CHECK: encoding: [0xc0,0xab,0x93]
++movnez a10, a11, a12
+diff --git a/llvm/test/MC/Xtensa/Core/processor-control.s b/llvm/test/MC/Xtensa/Core/processor-control.s
+new file mode 100644
+index 000000000000..8b975fa2448d
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/processor-control.s
+@@ -0,0 +1,31 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRR
++# CHECK-INST: dsync
++# CHECK: encoding: [0x30,0x20,0x00]
++dsync
++
++# Instruction format RRR
++# CHECK-INST: esync
++# CHECK: encoding: [0x20,0x20,0x00]
++esync
++
++# Instruction format RRR
++# CHECK-INST: isync
++# CHECK: encoding: [0x00,0x20,0x00]
++isync
++
++# Instruction format RRR
++# CHECK-INST: nop
++# CHECK: encoding: [0xf0,0x20,0x00]
++nop
++
++# Instruction format RRR
++# CHECK-INST: rsync
++# CHECK: encoding: [0x10,0x20,0x00]
++rsync
+diff --git a/llvm/test/MC/Xtensa/Misc/elf-header.s b/llvm/test/MC/Xtensa/Misc/elf-header.s
+new file mode 100644
+index 000000000000..0c24784d261e
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Misc/elf-header.s
+@@ -0,0 +1,31 @@
++# RUN: llvm-mc %s -filetype=obj -triple=xtensa | llvm-readobj -h - \
++# RUN:     | FileCheck %s
++
++# CHECK: Format: elf32-xtensa
++# CHECK-NEXT: Arch: xtensa
++# CHECK-NEXT: AddressSize: 32bit
++# CHECK:      ElfHeader {
++# CHECK-NEXT:   Ident {
++# CHECK-NEXT:     Magic: (7F 45 4C 46)
++# CHECK-NEXT:     Class: 32-bit (0x1)
++# CHECK-NEXT:     DataEncoding: LittleEndian (0x1)
++# CHECK-NEXT:     FileVersion: 1
++# CHECK-NEXT:     OS/ABI: SystemV (0x0)
++# CHECK-NEXT:     ABIVersion: 0
++# CHECK-NEXT:     Unused: (00 00 00 00 00 00 00)
++# CHECK-NEXT:   }
++# CHECK-NEXT:   Type: Relocatable (0x1)
++# CHECK-NEXT:   Machine: EM_XTENSA (0x5E)
++# CHECK-NEXT:   Version: 1
++# CHECK-NEXT:   Entry: 0x0
++# CHECK-NEXT:   ProgramHeaderOffset: 0x0
++# CHECK-NEXT:   SectionHeaderOffset: 0x5C
++# CHECK-NEXT:   Flags [ (0x0)
++# CHECK-NEXT:   ]
++# CHECK-NEXT:   HeaderSize: 52
++# CHECK-NEXT:   ProgramHeaderEntrySize: 0
++# CHECK-NEXT:   ProgramHeaderCount: 0
++# CHECK-NEXT:   SectionHeaderEntrySize: 40
++# CHECK-NEXT:   SectionHeaderCount: 4
++# CHECK-NEXT:   StringTableSectionIndex: 1
++# CHECK-NEXT: }
+diff --git a/llvm/test/MC/Xtensa/lit.local.cfg b/llvm/test/MC/Xtensa/lit.local.cfg
+new file mode 100644
+index 000000000000..9e0be9979305
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/lit.local.cfg
+@@ -0,0 +1,2 @@
++if not 'Xtensa' in config.root.targets:
++    config.unsupported = True
+-- 
+2.34.1
+

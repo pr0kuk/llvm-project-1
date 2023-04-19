@@ -1,0 +1,1134 @@
+From 4e0c1d98d3717d10e0230604a088ef38a3f7e060 Mon Sep 17 00:00:00 2001
+From: Andrei Safronov <andrei.safronov@espressif.com>
+Date: Mon, 26 Dec 2022 11:56:06 +0100
+Subject: [PATCH] [Xtensa 8/10] Add support of the Xtensa shift/load/store/move
+ and processor control instructions
+
+Add new subset of Core Instructions (not full yet). Add appropriate operands description,
+modify asm parser, printer and code emitter. Modify tests to support new instructions.
+
+Differential Revision: https://reviews.llvm.org/D64834
+---
+ .../Xtensa/AsmParser/XtensaAsmParser.cpp      | 167 ++++++++++++++++--
+ .../Xtensa/MCTargetDesc/XtensaInstPrinter.cpp | 116 ++++++++++++
+ .../Xtensa/MCTargetDesc/XtensaInstPrinter.h   |  11 ++
+ .../MCTargetDesc/XtensaMCCodeEmitter.cpp      | 121 ++++++++++++-
+ llvm/lib/Target/Xtensa/XtensaInstrInfo.td     | 156 +++++++++++++++-
+ llvm/lib/Target/Xtensa/XtensaOperands.td      |  83 +++++++++
+ llvm/test/MC/Xtensa/Core/invalid.s            |  49 ++++-
+ llvm/test/MC/Xtensa/Core/memory.s             |  41 +++++
+ llvm/test/MC/Xtensa/Core/move.s               |   5 +
+ llvm/test/MC/Xtensa/Core/processor-control.s  |  39 ++++
+ llvm/test/MC/Xtensa/Core/shift.s              |  66 +++++++
+ 11 files changed, 838 insertions(+), 16 deletions(-)
+ create mode 100644 llvm/test/MC/Xtensa/Core/memory.s
+ create mode 100644 llvm/test/MC/Xtensa/Core/shift.s
+
+diff --git a/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp b/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp
+index cb2a1c15b7e1..363a77536f0f 100644
+--- a/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp
++++ b/llvm/lib/Target/Xtensa/AsmParser/XtensaAsmParser.cpp
+@@ -55,7 +55,10 @@ class XtensaAsmParser : public MCTargetAsmParser {
+   OperandMatchResultTy parseRegister(OperandVector &Operands,
+                                      bool AllowParens = false, bool SR = false);
+   OperandMatchResultTy parseOperandWithModifier(OperandVector &Operands);
+-  bool parseOperand(OperandVector &Operands);
++  bool parseOperand(OperandVector &Operands, StringRef Mnemonic,
++                    bool SR = false);
++  bool ParseInstructionWithSR(ParseInstructionInfo &Info, StringRef Name,
++                              SMLoc NameLoc, OperandVector &Operands);
+   OperandMatchResultTy tryParseRegister(MCRegister &RegNo, SMLoc &StartLoc,
+                                         SMLoc &EndLoc) override {
+     return MatchOperand_NoMatch;
+@@ -141,9 +144,42 @@ public:
+ 
+   bool isImm8_sh8() const {
+     return isImm(-32768, 32512) &&
+-           ((dyn_cast<MCConstantExpr>(getImm())->getValue() & 0xFF) == 0);
++           ((cast<MCConstantExpr>(getImm())->getValue() & 0xFF) == 0);
+   }
+ 
++  bool isImm12() const { return isImm(-2048, 2047); }
++
++  bool isImm12m() const { return isImm(-2048, 2047); }
++
++  bool isOffset4m32() const {
++    return isImm(0, 60) &&
++           ((cast<MCConstantExpr>(getImm())->getValue() & 0x3) == 0);
++  }
++
++  bool isOffset8m8() const { return isImm(0, 255); }
++
++  bool isOffset8m16() const {
++    return isImm(0, 510) &&
++           ((cast<MCConstantExpr>(getImm())->getValue() & 0x1) == 0);
++  }
++
++  bool isOffset8m32() const {
++    return isImm(0, 1020) &&
++           ((cast<MCConstantExpr>(getImm())->getValue() & 0x3) == 0);
++  }
++
++  bool isUimm4() const { return isImm(0, 15); }
++
++  bool isUimm5() const { return isImm(0, 31); }
++
++  bool isImm8n_7() const { return isImm(-8, 7); }
++
++  bool isShimm1_31() const { return isImm(1, 31); }
++
++  bool isImm16_31() const { return isImm(16, 31); }
++
++  bool isImm1_16() const { return isImm(1, 16); }
++
+   /// getStartLoc - Gets location of the first token of this operand
+   SMLoc getStartLoc() const override { return StartLoc; }
+   /// getEndLoc - Gets location of the last token of this operand
+@@ -292,6 +328,39 @@ bool XtensaAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
+     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                  "expected immediate in range [-32768, 32512], first 8 bits "
+                  "should be zero");
++  case Match_InvalidImm12:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [-2048, 2047]");
++  case Match_InvalidImm12m:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [-2048, 2047]");
++  case Match_InvalidImm1_16:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [1, 16]");
++  case Match_InvalidShimm1_31:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [1, 31]");
++  case Match_InvalidUimm4:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [0, 15]");
++  case Match_InvalidUimm5:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [0, 31]");
++  case Match_InvalidOffset8m8:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [0, 255]");
++  case Match_InvalidOffset8m16:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [0, 510], first bit "
++                 "should be zero");
++  case Match_InvalidOffset8m32:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [0, 1020], first 2 bits "
++                 "should be zero");
++  case Match_InvalidOffset4m32:
++    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
++                 "expected immediate in range [0, 60], first 2 bits "
++                 "should be zero");
+   }
+ 
+   report_fatal_error("Unknown match type detected!");
+@@ -324,23 +393,34 @@ OperandMatchResultTy XtensaAsmParser::parseRegister(OperandVector &Operands,
+   if (AllowParens && getLexer().is(AsmToken::LParen)) {
+     size_t ReadCount = getLexer().peekTokens(Buf);
+     if (ReadCount == 2 && Buf[1].getKind() == AsmToken::RParen) {
++      if ((Buf[0].getKind() == AsmToken::Integer) && (!SR))
++        return MatchOperand_NoMatch;
+       HadParens = true;
+       getParser().Lex(); // Eat '('
+     }
+   }
+ 
++  unsigned RegNo = 0;
++
+   switch (getLexer().getKind()) {
+   default:
+     return MatchOperand_NoMatch;
++  case AsmToken::Integer:
++    if (!SR)
++      return MatchOperand_NoMatch;
++    RegName = StringRef(std::to_string(getLexer().getTok().getIntVal()));
++    RegNo = MatchRegisterName(RegName);
++    if (RegNo == 0)
++      RegNo = MatchRegisterAltName(RegName);
++    break;
+   case AsmToken::Identifier:
+     RegName = getLexer().getTok().getIdentifier();
++    RegNo = MatchRegisterName(RegName);
++    if (RegNo == 0)
++      RegNo = MatchRegisterAltName(RegName);
+     break;
+   }
+ 
+-  unsigned RegNo = MatchRegisterName(RegName);
+-  if (RegNo == 0)
+-    RegNo = MatchRegisterAltName(RegName);
+-
+   if (RegNo == 0) {
+     if (HadParens)
+       getLexer().UnLex(Buf[0]);
+@@ -404,9 +484,10 @@ XtensaAsmParser::parseOperandWithModifier(OperandVector &Operands) {
+ /// Looks at a token type and creates the relevant operand
+ /// from this information, adding to Operands.
+ /// If operand was parsed, returns false, else true.
+-bool XtensaAsmParser::parseOperand(OperandVector &Operands) {
++bool XtensaAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic,
++                                   bool SR) {
+   // Attempt to parse token as register
+-  if (parseRegister(Operands, true) == MatchOperand_Success)
++  if (parseRegister(Operands, true, SR) == MatchOperand_Success)
+     return false;
+ 
+   // Attempt to parse token as an immediate
+@@ -419,9 +500,75 @@ bool XtensaAsmParser::parseOperand(OperandVector &Operands) {
+   return true;
+ }
+ 
++bool XtensaAsmParser::ParseInstructionWithSR(ParseInstructionInfo &Info,
++                                             StringRef Name, SMLoc NameLoc,
++                                             OperandVector &Operands) {
++  if ((Name.startswith("wsr.") || Name.startswith("rsr.") ||
++       Name.startswith("xsr.")) &&
++      (Name.size() > 4)) {
++    // Parse case when instruction name is concatenated with SR register
++    // name, like "wsr.sar a1"
++
++    // First operand is token for instruction
++    Operands.push_back(XtensaOperand::createToken(Name.take_front(3), NameLoc));
++
++    StringRef RegName = Name.drop_front(4);
++    unsigned RegNo = MatchRegisterName(RegName);
++
++    if (RegNo == 0)
++      RegNo = MatchRegisterAltName(RegName);
++
++    if (RegNo == 0) {
++      Error(NameLoc, "invalid register name");
++      return true;
++    }
++
++    // Parse operand
++    if (parseOperand(Operands, Name))
++      return true;
++
++    SMLoc S = getLoc();
++    SMLoc E = SMLoc::getFromPointer(S.getPointer() - 1);
++    Operands.push_back(XtensaOperand::createReg(RegNo, S, E));
++  } else {
++    // First operand is token for instruction
++    Operands.push_back(XtensaOperand::createToken(Name, NameLoc));
++
++    // Parse first operand
++    if (parseOperand(Operands, Name))
++      return true;
++
++    if (!getLexer().is(AsmToken::Comma)) {
++      SMLoc Loc = getLexer().getLoc();
++      getParser().eatToEndOfStatement();
++      return Error(Loc, "unexpected token");
++    }
++
++    getLexer().Lex();
++
++    // Parse second operand
++    if (parseOperand(Operands, Name, true))
++      return true;
++  }
++
++  if (getLexer().isNot(AsmToken::EndOfStatement)) {
++    SMLoc Loc = getLexer().getLoc();
++    getParser().eatToEndOfStatement();
++    return Error(Loc, "unexpected token");
++  }
++
++  getParser().Lex(); // Consume the EndOfStatement.
++  return false;
++}
++
+ bool XtensaAsmParser::ParseInstruction(ParseInstructionInfo &Info,
+                                        StringRef Name, SMLoc NameLoc,
+                                        OperandVector &Operands) {
++  if (Name.startswith("wsr") || Name.startswith("rsr") ||
++      Name.startswith("xsr")) {
++    return ParseInstructionWithSR(Info, Name, NameLoc, Operands);
++  }
++
+   // First operand is token for instruction
+   Operands.push_back(XtensaOperand::createToken(Name, NameLoc));
+ 
+@@ -430,7 +577,7 @@ bool XtensaAsmParser::ParseInstruction(ParseInstructionInfo &Info,
+     return false;
+ 
+   // Parse first operand
+-  if (parseOperand(Operands))
++  if (parseOperand(Operands, Name))
+     return true;
+ 
+   // Parse until end of statement, consuming commas between operands
+@@ -439,7 +586,7 @@ bool XtensaAsmParser::ParseInstruction(ParseInstructionInfo &Info,
+     getLexer().Lex();
+ 
+     // Parse next operand
+-    if (parseOperand(Operands))
++    if (parseOperand(Operands, Name))
+       return true;
+   }
+ 
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+index a97f2977b92a..47a17a2cd74d 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.cpp
+@@ -82,6 +82,13 @@ void XtensaInstPrinter::printOperand(const MCInst *MI, int OpNum,
+   printOperand(MI->getOperand(OpNum), O);
+ }
+ 
++void XtensaInstPrinter::printMemOperand(const MCInst *MI, int OpNum,
++                                        raw_ostream &OS) {
++  OS << getRegisterName(MI->getOperand(OpNum).getReg());
++  OS << ", ";
++  printOperand(MI, OpNum + 1, OS);
++}
++
+ void XtensaInstPrinter::printImm8_AsmOperand(const MCInst *MI, int OpNum,
+                                              raw_ostream &O) {
+   if (MI->getOperand(OpNum).isImm()) {
+@@ -105,3 +112,112 @@ void XtensaInstPrinter::printImm8_sh8_AsmOperand(const MCInst *MI, int OpNum,
+   } else
+     printOperand(MI, OpNum, O);
+ }
++
++void XtensaInstPrinter::printImm12_AsmOperand(const MCInst *MI, int OpNum,
++                                              raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= -2048 && Value <= 2047) &&
++           "Invalid argument, value must be in ranges [-2048,2047]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printImm12m_AsmOperand(const MCInst *MI, int OpNum,
++                                               raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= -2048 && Value <= 2047) &&
++           "Invalid argument, value must be in ranges [-2048,2047]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printUimm4_AsmOperand(const MCInst *MI, int OpNum,
++                                              raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 0 && Value <= 15) && "Invalid argument");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printUimm5_AsmOperand(const MCInst *MI, int OpNum,
++                                              raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 0 && Value <= 31) && "Invalid argument");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printShimm1_31_AsmOperand(const MCInst *MI, int OpNum,
++                                                  raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 1 && Value <= 31) &&
++           "Invalid argument, value must be in range [1,31]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printImm1_16_AsmOperand(const MCInst *MI, int OpNum,
++                                                raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 1 && Value <= 16) &&
++           "Invalid argument, value must be in range [1,16]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printOffset8m8_AsmOperand(const MCInst *MI, int OpNum,
++                                                  raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 0 && Value <= 255) &&
++           "Invalid argument, value must be in range [0,255]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printOffset8m16_AsmOperand(const MCInst *MI, int OpNum,
++                                                   raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 0 && Value <= 510 && ((Value & 0x1) == 0)) &&
++           "Invalid argument, value must be multiples of two in range [0,510]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printOffset8m32_AsmOperand(const MCInst *MI, int OpNum,
++                                                   raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert(
++        (Value >= 0 && Value <= 1020 && ((Value & 0x3) == 0)) &&
++        "Invalid argument, value must be multiples of four in range [0,1020]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
++
++void XtensaInstPrinter::printOffset4m32_AsmOperand(const MCInst *MI, int OpNum,
++                                                   raw_ostream &O) {
++  if (MI->getOperand(OpNum).isImm()) {
++    int64_t Value = MI->getOperand(OpNum).getImm();
++    assert((Value >= 0 && Value <= 60 && ((Value & 0x3) == 0)) &&
++           "Invalid argument, value must be multiples of four in range [0,60]");
++    O << Value;
++  } else
++    printOperand(MI, OpNum, O);
++}
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+index fcadfad1cc50..5d62a9c3011f 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaInstPrinter.h
+@@ -43,9 +43,20 @@ public:
+ private:
+   // Print various types of operand.
+   void printOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printMemOperand(const MCInst *MI, int OpNUm, raw_ostream &O);
+ 
+   void printImm8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+   void printImm8_sh8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printImm12_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printImm12m_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printUimm4_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printUimm5_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printShimm1_31_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printImm1_16_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printOffset8m8_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printOffset8m16_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printOffset8m32_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
++  void printOffset4m32_AsmOperand(const MCInst *MI, int OpNum, raw_ostream &O);
+ };
+ } // end namespace llvm
+ 
+diff --git a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+index 7c7751d5cf07..c52bfd33ce6b 100644
+--- a/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
++++ b/llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCCodeEmitter.cpp
+@@ -53,6 +53,10 @@ private:
+                              SmallVectorImpl<MCFixup> &Fixups,
+                              const MCSubtargetInfo &STI) const;
+ 
++  uint32_t getMemRegEncoding(const MCInst &MI, unsigned OpNo,
++                             SmallVectorImpl<MCFixup> &Fixups,
++                             const MCSubtargetInfo &STI) const;
++
+   uint32_t getImm8OpValue(const MCInst &MI, unsigned OpNo,
+                           SmallVectorImpl<MCFixup> &Fixups,
+                           const MCSubtargetInfo &STI) const;
+@@ -60,6 +64,26 @@ private:
+   uint32_t getImm8_sh8OpValue(const MCInst &MI, unsigned OpNo,
+                               SmallVectorImpl<MCFixup> &Fixups,
+                               const MCSubtargetInfo &STI) const;
++
++  uint32_t getImm12OpValue(const MCInst &MI, unsigned OpNo,
++                           SmallVectorImpl<MCFixup> &Fixups,
++                           const MCSubtargetInfo &STI) const;
++
++  uint32_t getUimm4OpValue(const MCInst &MI, unsigned OpNo,
++                           SmallVectorImpl<MCFixup> &Fixups,
++                           const MCSubtargetInfo &STI) const;
++
++  uint32_t getUimm5OpValue(const MCInst &MI, unsigned OpNo,
++                           SmallVectorImpl<MCFixup> &Fixups,
++                           const MCSubtargetInfo &STI) const;
++
++  uint32_t getImm1_16OpValue(const MCInst &MI, unsigned OpNo,
++                             SmallVectorImpl<MCFixup> &Fixups,
++                             const MCSubtargetInfo &STI) const;
++
++  uint32_t getShimm1_31OpValue(const MCInst &MI, unsigned OpNo,
++                               SmallVectorImpl<MCFixup> &Fixups,
++                               const MCSubtargetInfo &STI) const;
+ };
+ } // namespace
+ 
+@@ -94,14 +118,48 @@ XtensaMCCodeEmitter::getMachineOpValue(const MCInst &MI, const MCOperand &MO,
+   if (MO.isReg())
+     return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg());
+   if (MO.isImm()) {
+-    uint32_t res = static_cast<uint32_t>(MO.getImm());
+-    return res;
++    uint32_t Res = static_cast<uint32_t>(MO.getImm());
++    return Res;
+   }
+ 
+   report_fatal_error("Unhandled expression!");
+   return 0;
+ }
+ 
++uint32_t
++XtensaMCCodeEmitter::getMemRegEncoding(const MCInst &MI, unsigned OpNo,
++                                       SmallVectorImpl<MCFixup> &Fixups,
++                                       const MCSubtargetInfo &STI) const {
++  assert(MI.getOperand(OpNo + 1).isImm());
++
++  uint32_t Res = static_cast<uint32_t>(MI.getOperand(OpNo + 1).getImm());
++
++  switch (MI.getOpcode()) {
++  case Xtensa::S16I:
++  case Xtensa::L16SI:
++  case Xtensa::L16UI:
++    if (Res & 0x1) {
++      report_fatal_error("Unexpected operand value!");
++    }
++    Res >>= 1;
++    break;
++  case Xtensa::S32I:
++  case Xtensa::L32I:
++    if (Res & 0x3) {
++      report_fatal_error("Unexpected operand value!");
++    }
++    Res >>= 2;
++    break;
++  }
++  
++  assert((isUInt<8>(Res)) && "Unexpected operand value!");
++
++  uint32_t OffBits = Res << 4;
++  uint32_t RegBits = getMachineOpValue(MI, MI.getOperand(OpNo), Fixups, STI);
++
++  return ((OffBits & 0xFF0) | RegBits);
++}
++
+ uint32_t XtensaMCCodeEmitter::getImm8OpValue(const MCInst &MI, unsigned OpNo,
+                                              SmallVectorImpl<MCFixup> &Fixups,
+                                              const MCSubtargetInfo &STI) const {
+@@ -126,4 +184,63 @@ XtensaMCCodeEmitter::getImm8_sh8OpValue(const MCInst &MI, unsigned OpNo,
+   return (Res & 0xffff);
+ }
+ 
++uint32_t
++XtensaMCCodeEmitter::getImm12OpValue(const MCInst &MI, unsigned OpNo,
++                                     SmallVectorImpl<MCFixup> &Fixups,
++                                     const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  int32_t Res = MO.getImm();
++
++  assert(((Res >= -2048) && (Res <= 2047)) && "Unexpected operand value!");
++
++  return (Res & 0xfff);
++}
++
++uint32_t
++XtensaMCCodeEmitter::getUimm4OpValue(const MCInst &MI, unsigned OpNo,
++                                     SmallVectorImpl<MCFixup> &Fixups,
++                                     const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  uint32_t Res = static_cast<uint32_t>(MO.getImm());
++
++  assert((Res <= 15) && "Unexpected operand value!");
++
++  return Res & 0xf;
++}
++
++uint32_t
++XtensaMCCodeEmitter::getUimm5OpValue(const MCInst &MI, unsigned OpNo,
++                                     SmallVectorImpl<MCFixup> &Fixups,
++                                     const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  uint32_t Res = static_cast<uint32_t>(MO.getImm());
++
++  assert((Res <= 31) && "Unexpected operand value!");
++
++  return (Res & 0x1f);
++}
++
++uint32_t
++XtensaMCCodeEmitter::getShimm1_31OpValue(const MCInst &MI, unsigned OpNo,
++                                         SmallVectorImpl<MCFixup> &Fixups,
++                                         const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  uint32_t Res = static_cast<uint32_t>(MO.getImm());
++
++  assert(((Res >= 1) && (Res <= 31)) && "Unexpected operand value!");
++
++  return ((32 - Res) & 0x1f);
++}
++
++uint32_t
++XtensaMCCodeEmitter::getImm1_16OpValue(const MCInst &MI, unsigned OpNo,
++                                       SmallVectorImpl<MCFixup> &Fixups,
++                                       const MCSubtargetInfo &STI) const {
++  const MCOperand &MO = MI.getOperand(OpNo);
++  uint32_t Res = static_cast<uint32_t>(MO.getImm());
++
++  assert(((Res >= 1) && (Res <= 16)) && "Unexpected operand value!");
++
++  return (Res - 1);
++}
+ #include "XtensaGenMCCodeEmitter.inc"
+diff --git a/llvm/lib/Target/Xtensa/XtensaInstrInfo.td b/llvm/lib/Target/Xtensa/XtensaInstrInfo.td
+index cbccef6b13b6..c9dd5d32a25e 100644
+--- a/llvm/lib/Target/Xtensa/XtensaInstrInfo.td
++++ b/llvm/lib/Target/Xtensa/XtensaInstrInfo.td
+@@ -79,8 +79,16 @@ def NEG : RRR_Inst<0x00, 0x00, 0x06, (outs AR:$r), (ins AR:$t),
+ //===----------------------------------------------------------------------===//
+ // Move instructions
+ //===----------------------------------------------------------------------===//
++def MOVI : RRI8_Inst<0x02, (outs AR:$t), (ins imm12m:$imm),
++                    "movi\t$t, $imm",
++                    [(set AR:$t, imm12m:$imm)]> {
++  bits<12> imm;
++
++  let imm8{7-0} = imm{7-0};
++  let s{3-0} = imm{11-8};
++  let r = 0xa;
++}
+ 
+-// Conditional move
+ def MOVEQZ : RRR_Inst<0x00, 0x03, 0x08, (outs AR:$r), (ins AR:$s, AR:$t),
+                      "moveqz\t$r, $s, $t", []>;
+ def MOVNEZ : RRR_Inst<0x00, 0x03, 0x09, (outs AR:$r), (ins AR:$s, AR:$t),
+@@ -90,9 +98,144 @@ def MOVLTZ : RRR_Inst<0x00, 0x03, 0x0A, (outs AR:$r), (ins AR:$s, AR:$t),
+ def MOVGEZ : RRR_Inst<0x00, 0x03, 0x0B, (outs AR:$r), (ins AR:$s, AR:$t),
+                      "movgez\t$r, $s, $t", []>;
+ 
++//===----------------------------------------------------------------------===//
++// Shift instructions
++//===----------------------------------------------------------------------===//
++
++let Uses = [SAR] in {
++  def SLL : RRR_Inst<0x00, 0x01, 0x0A, (outs AR:$r), (ins AR:$s),
++                    "sll\t$r, $s", []> {
++    let t = 0x00;
++  }
++
++  def SRA : RRR_Inst<0x00, 0x01, 0x0B, (outs AR:$r), (ins AR:$t),
++                    "sra\t$r, $t", []> {
++    let s = 0x00;
++  }
++
++  def SRC : RRR_Inst<0x00, 0x01, 0x08, (outs AR:$r), (ins AR:$s, AR:$t),
++                    "src\t$r, $s, $t", []>;
++
++  def SRL : RRR_Inst<0x00, 0x01, 0x09, (outs AR:$r), (ins AR:$t),
++                    "srl\t$r, $t", []> {
++    let s = 0x00;
++  }
++}
++
++let Defs = [SAR] in {
++  def SSL : RRR_Inst<0x00, 0x00, 0x04, (outs), (ins AR:$s),
++                    "ssl\t$s", []> {
++    let r = 0x01;
++    let t = 0x00;
++  }
++
++  def SSR : RRR_Inst<0x00, 0x00, 0x04, (outs), (ins AR:$s),
++                    "ssr\t$s", []> {
++    let r = 0x00;
++    let t = 0x00;
++  }
++}
++
++def EXTUI : RRR_Inst<0x00, 0x04, 0x00, (outs AR:$r), (ins AR:$t, uimm5:$imm1, imm1_16:$imm2),
++                    "extui\t$r, $t, $imm1, $imm2", []> {
++  bits<5> imm1;
++  bits<4> imm2;
++
++  let s = imm1{3-0};
++  let Inst{16} = imm1{4};
++  let Inst{23-20} = imm2;
++}
++
++def SRAI : RRR_Inst<0x00, 0x01, 0x02, (outs AR:$r), (ins AR:$t, uimm5:$sa),
++                   "srai\t$r, $t, $sa",
++                   [(set AR:$r, (sra AR:$t, uimm5:$sa))]> {
++  bits<5> sa;
++
++  let Inst{20} = sa{4};
++  let s = sa{3-0};
++}
++
++def SRLI : RRR_Inst<0x00, 0x01, 0x04, (outs AR:$r), (ins AR:$t, uimm4:$sa),
++                   "srli\t$r, $t, $sa",
++                   [(set AR:$r, (srl AR:$t, uimm4:$sa))]> {
++  bits<4> sa;
++
++  let s = sa;
++}
++
++def SLLI : RRR_Inst<0x00, 0x01, 0x00, (outs AR:$r), (ins AR:$s, shimm1_31:$sa),
++                   "slli\t$r, $s, $sa",
++                   [(set AR:$r, (shl AR:$s, shimm1_31:$sa))]> {
++  bits<5> sa;
++
++  let Inst{20} = sa{4};
++  let t = sa{3-0};
++}
++
++def SSA8L : RRR_Inst<0x00, 0x00, 0x04, (outs), (ins AR:$s),
++                    "ssa8l\t$s", []> {
++  let r = 0x2;
++  let t = 0x0;
++}
++
++def SSAI : RRR_Inst<0x00, 0x00, 0x04, (outs), (ins uimm5:$imm),
++                   "ssai\t$imm", []> {
++  bits<5> imm;
++
++  let r = 0x04;
++  let s = imm{3-0};
++  let t{3-1} = 0;
++  let t{0} = imm{4};
++}
++
++//===----------------------------------------------------------------------===//
++// Load and store instructions
++//===----------------------------------------------------------------------===//
++
++// Load instructions
++let mayLoad = 1 in {
++
++  class Load_RRI8<bits<4> oper, string instrAsm, SDPatternOperator opNode,
++        ComplexPattern addrOp, Operand memOp>
++	  : RRI8_Inst<0x02, (outs AR:$t), (ins memOp:$addr),
++                instrAsm#"\t$t, $addr",
++               [(set AR:$t, (opNode addrOp:$addr))]> {
++    bits<12> addr;
++
++    let r = oper;
++    let imm8{7-0} = addr{11-4};
++    let s{3-0} = addr{3-0};
++  }
++}
++
++def L8UI  : Load_RRI8<0x00, "l8ui", zextloadi8, addr_ish1, mem8>;
++def L16SI : Load_RRI8<0x09, "l16si", sextloadi16, addr_ish2, mem16>;
++def L16UI : Load_RRI8<0x01, "l16ui", zextloadi16, addr_ish2, mem16>;
++def L32I  : Load_RRI8<0x02, "l32i", load, addr_ish4, mem32>;
++
++// Store instructions
++let mayStore = 1 in {
++  class Store_II8<bits<4> oper, string instrAsm, SDPatternOperator opNode,
++        ComplexPattern addrOp, Operand memOp>
++	  : RRI8_Inst<0x02, (outs), (ins AR:$t, memOp:$addr),
++                instrAsm#"\t$t, $addr",
++               [(opNode AR:$t, addrOp:$addr)]> {
++    bits<12> addr;
++
++    let r = oper;
++    let imm8{7-0} = addr{11-4};
++    let s{3-0} = addr{3-0};
++  }
++}
++
++def S8I  : Store_II8<0x04, "s8i", truncstorei8, addr_ish1, mem8>;
++def S16I : Store_II8<0x05, "s16i", truncstorei16, addr_ish2, mem16>;
++def S32I : Store_II8<0x06, "s32i", store, addr_ish4, mem32>;
++
+ //===----------------------------------------------------------------------===//
+ // Mem barrier instructions
+ //===----------------------------------------------------------------------===//
++
+ def MEMW :  RRR_Inst<0x00, 0x00, 0x00, (outs), (ins),
+                     "memw", []> {
+   let r = 0x2;
+@@ -150,3 +293,14 @@ def NOP : RRR_Inst<0x00, 0x00, 0x00, (outs), (ins),
+   let s = 0x00;
+   let t = 0x0f;
+ }
++
++def WSR : RSR_Inst<0x00, 0x03, 0x01, (outs SR:$sr), (ins AR:$t),
++                  "wsr\t$t, $sr", []>;
++
++def RSR : RSR_Inst<0x00, 0x03, 0x00, (outs AR:$t), (ins SR:$sr),
++                  "rsr\t$t, $sr", []>;
++
++def XSR : RSR_Inst<0x00, 0x01, 0x06, (outs AR:$ard, SR:$srd), (ins AR:$t, SR:$sr),
++                  "xsr\t$t, $sr", []> {
++  let Constraints = "$ard = $t, $srd = $sr";
++}
+diff --git a/llvm/lib/Target/Xtensa/XtensaOperands.td b/llvm/lib/Target/Xtensa/XtensaOperands.td
+index 9a1ed0356cdb..c8fca6f5e7bf 100644
+--- a/llvm/lib/Target/Xtensa/XtensaOperands.td
++++ b/llvm/lib/Target/Xtensa/XtensaOperands.td
+@@ -34,3 +34,86 @@ def imm8_sh8 : Immediate<i32, [{ return Imm >= -32768 && Imm <= 32512 && ((Imm &
+                         "Imm8_sh8_AsmOperand"> {
+   let EncoderMethod = "getImm8_sh8OpValue";
+ }
++
++// imm12 predicate - Immediate in the range [-2048,2047]
++def Imm12_AsmOperand : ImmAsmOperand<"Imm12">;
++def imm12 : Immediate<i32, [{ return Imm >= -2048 && Imm <= 2047; }], "Imm12_AsmOperand"> {
++  let EncoderMethod = "getImm12OpValue";
++}
++
++// imm12m predicate - Immediate for MOV operation
++def Imm12m_AsmOperand : ImmAsmOperand<"Imm12m">;
++def imm12m : Immediate<i32, [{ return Imm >= -2048 && Imm <= 2047; }], "Imm12m_AsmOperand"> {
++  let EncoderMethod = "getImm12OpValue";
++}
++
++// uimm4 predicate - Immediate in the range [0,15]
++def Uimm4_AsmOperand : ImmAsmOperand<"Uimm4">;
++def uimm4 : Immediate<i32, [{ return Imm >= 0 && Imm <= 15; }], "Uimm4_AsmOperand"> {
++  let EncoderMethod = "getUimm4OpValue";
++}
++
++// uimm5 predicate - Immediate in the range [0,31]
++def Uimm5_AsmOperand : ImmAsmOperand<"Uimm5">;
++def uimm5 : Immediate<i32, [{ return Imm >= 0 && Imm <= 31; }], "Uimm5_AsmOperand"> {
++  let EncoderMethod = "getUimm5OpValue";
++}
++
++// imm1_16 predicate - Immediate in the range [1,16]
++def Imm1_16_AsmOperand : ImmAsmOperand<"Imm1_16">;
++def imm1_16 : Immediate<i32, [{ return Imm >= 1 && Imm <= 16; }], "Imm1_16_AsmOperand"> {
++  let EncoderMethod = "getImm1_16OpValue";
++}
++
++// shimm1_31 predicate - Immediate in the range [1,31]
++def Shimm1_31_AsmOperand : ImmAsmOperand<"Shimm1_31">;
++def shimm1_31 : Immediate<i32, [{ return Imm >= 1 && Imm <= 31; }], "Shimm1_31_AsmOperand"> {
++  let EncoderMethod = "getShimm1_31OpValue";
++}
++
++// Memory offset 0..255 for 8-bit memory accesses
++def Offset8m8_AsmOperand : ImmAsmOperand<"Offset8m8">;
++def offset8m8 : Immediate<i32,
++    [{ return Imm >= 0 && Imm <= 255; }],
++    "Offset8m8_AsmOperand">;
++
++// Memory offset 0..510 for 16-bit memory accesses
++def Offset8m16_AsmOperand : ImmAsmOperand<"Offset8m16">;
++def offset8m16 : Immediate<i32,
++    [{ return Imm >= 0 && Imm <= 510 && (Imm & 0x1 == 0); }],
++    "Offset8m16_AsmOperand">;
++
++// Memory offset 0..1020 for 32-bit memory accesses
++def Offset8m32_AsmOperand : ImmAsmOperand<"Offset8m32">;
++def offset8m32 : Immediate<i32,
++    [{ return Imm >= 0 && Imm <= 1020 && (Imm & 0x3 == 0); }],
++    "Offset8m32_AsmOperand">;
++
++// Memory offset 0..60 for 32-bit memory accesses
++def Offset4m32_AsmOperand : ImmAsmOperand<"Offset4m32">;
++def offset4m32 : Immediate<i32,
++    [{ return Imm >= 0 && Imm <= 60 && (Imm & 0x3 == 0); }],
++    "Offset4m32_AsmOperand">;
++//===----------------------------------------------------------------------===//
++// Memory address operands
++//===----------------------------------------------------------------------===//
++
++class mem<Operand offset> : Operand<i32> {
++  let MIOperandInfo = (ops AR, offset);
++  let EncoderMethod = "getMemRegEncoding";
++  let OperandType = "OPERAND_MEMORY";
++  let PrintMethod = "printMemOperand";
++}
++
++def mem8   : mem<offset8m8>;
++
++def mem16  : mem<offset8m16>;
++
++def mem32  : mem<offset8m32>;
++
++def mem32n : mem<offset4m32>;
++
++//Add patterns for future use in stack addressing mode
++def addr_ish1 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH1", [frameindex]>;
++def addr_ish2 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH2", [frameindex]>;
++def addr_ish4 : ComplexPattern<iPTR, 2, "selectMemRegAddrISH4", [frameindex]>;
+diff --git a/llvm/test/MC/Xtensa/Core/invalid.s b/llvm/test/MC/Xtensa/Core/invalid.s
+index 9fd12adb8577..910e7a36ae4b 100644
+--- a/llvm/test/MC/Xtensa/Core/invalid.s
++++ b/llvm/test/MC/Xtensa/Core/invalid.s
+@@ -1,13 +1,18 @@
+ # RUN: not llvm-mc -triple xtensa %s 2>&1 | FileCheck %s
+ 
++LBL0:
++
+ # Out of range immediates
+ 
+-LBL0:
++# imm12m
++movi a1, 3000
++# CHECK: :[[#@LINE-1]]:10: error: expected immediate in range [-2048, 2047]
+ 
+ # imm8
+ addi a1, a2, 300
+ # CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [-128, 127]
+ 
++# imm8
+ addi a1, a2, -129
+ # CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [-128, 127]
+ 
+@@ -15,6 +20,34 @@ addi a1, a2, -129
+ addmi a1, a2, 33
+ # CHECK: :[[#@LINE-1]]:15: error: expected immediate in range [-32768, 32512], first 8 bits should be zero
+ 
++# shimm1_31
++slli a1, a2, 0
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [1, 31]
++
++# uimm4
++srli a1, a2, 16
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [0, 15]
++
++# uimm5
++srai a2, a3, 32
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [0, 31]
++
++# imm1_16
++extui a1, a3, 1, 17
++# CHECK: :[[#@LINE-1]]:18: error: expected immediate in range [1, 16]
++
++# offset8m8
++s8i a1, a2, 300
++# CHECK: :[[#@LINE-1]]:13: error: expected immediate in range [0, 255]
++
++# offset16m8
++l16si a1, a2, 512
++# CHECK: :[[#@LINE-1]]:15: error: expected immediate in range [0, 510], first bit should be zero
++
++# offset32m8
++l32i a1, a2, 1024
++# CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [0, 1020], first 2 bits should be zero
++
+ # Invalid number of operands
+ addi a1, a2
+ # CHECK: :[[#@LINE-1]]:1: error: too few operands for instruction
+@@ -31,7 +64,7 @@ and sp, a2, 10
+ addi sp, a1, a2
+ # CHECK: :[[#@LINE-1]]:14: error: expected immediate in range [-128, 127]
+ 
+-# Invalid register names
++# Check invalid register names for different formats
+ # Instruction format RRR
+ or r2, sp, a3
+ # CHECK: :[[#@LINE-1]]:4: error: invalid operand for instruction
+@@ -46,7 +79,17 @@ addi a101, sp, 10
+ addi a1, r10, 10
+ # CHECK: :[[#@LINE-1]]:10: error: invalid operand for instruction
+ 
+-# Invalid operands order
++# Instruction format RSR
++wsr.uregister a2
++# CHECK: :[[#@LINE-1]]:1: error: invalid register name
++wsr a2, uregister
++# CHECK: :[[#@LINE-1]]:9: error: invalid operand for instruction
++
++# Check invalid operands order for different formats
+ # Instruction format RRI8
+ addi a1, 10, a2
+ # CHECK: :[[#@LINE-1]]:10: error: invalid operand for instruction
++
++# Instruction format RSR
++wsr sar, a2
++# CHECK: :[[#@LINE-1]]:5: error: invalid operand for instruction
+diff --git a/llvm/test/MC/Xtensa/Core/memory.s b/llvm/test/MC/Xtensa/Core/memory.s
+new file mode 100644
+index 000000000000..1e5a45782833
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/memory.s
+@@ -0,0 +1,41 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRI8
++# CHECK-INST: l8ui a2, a1, 3
++# CHECK: encoding: [0x22,0x01,0x03]
++l8ui a2, sp, 3
++
++# Instruction format RRI8
++# CHECK-INST: l16si a3, a1, 4
++# CHECK: encoding: [0x32,0x91,0x02]
++l16si a3, sp, 4
++
++# Instruction format RRI8
++# CHECK-INST: l16ui a4, a1, 6
++# CHECK: encoding: [0x42,0x11,0x03]
++l16ui a4, sp, 6
++
++# Instruction format RRI8
++# CHECK-INST: l32i a5, a1, 8
++# CHECK: encoding: [0x52,0x21,0x02]
++l32i a5, sp, 8
++
++# Instruction format RRI8
++# CHECK-INST: s8i a2, a1, 3
++# CHECK: encoding: [0x22,0x41,0x03]
++s8i a2, sp, 3
++
++# Instruction format RRI8
++# CHECK-INST: s16i a3, a1, 4
++# CHECK: encoding: [0x32,0x51,0x02]
++s16i a3, sp, 4
++
++# Instruction format RRI8
++# CHECK-INST: s32i a5, a1, 8
++# CHECK: encoding: [0x52,0x61,0x02]
++s32i a5, sp, 8
+diff --git a/llvm/test/MC/Xtensa/Core/move.s b/llvm/test/MC/Xtensa/Core/move.s
+index 8f9ed581f47f..87616599709c 100644
+--- a/llvm/test/MC/Xtensa/Core/move.s
++++ b/llvm/test/MC/Xtensa/Core/move.s
+@@ -15,6 +15,11 @@ moveqz a2, a3, a4
+ # CHECK: encoding: [0xc0,0x3b,0xb3]
+ movgez a3, a11, a12
+ 
++# Instruction format RRI8
++# CHECK-INST: movi a1, -2048
++# CHECK: encoding: [0x12,0xa8,0x00]
++movi a1, -2048
++
+ # Instruction format RRR
+ # CHECK-INST: movltz a7, a8, a9
+ # CHECK: encoding: [0x90,0x78,0xa3]
+diff --git a/llvm/test/MC/Xtensa/Core/processor-control.s b/llvm/test/MC/Xtensa/Core/processor-control.s
+index 8b975fa2448d..5b648356fc68 100644
+--- a/llvm/test/MC/Xtensa/Core/processor-control.s
++++ b/llvm/test/MC/Xtensa/Core/processor-control.s
+@@ -25,7 +25,46 @@ isync
+ # CHECK: encoding: [0xf0,0x20,0x00]
+ nop
+ 
++# Instruction format RSR
++# CHECK-INST: rsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x03]
++rsr a8, sar
++
++# CHECK-INST: rsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x03]
++rsr.sar a8
++
++# CHECK-INST: rsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x03]
++rsr a8, 3
++
+ # Instruction format RRR
+ # CHECK-INST: rsync
+ # CHECK: encoding: [0x10,0x20,0x00]
+ rsync
++
++# Instruction format RSR
++# CHECK-INST: wsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x13]
++wsr a8, sar
++
++# CHECK-INST: wsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x13]
++wsr.sar a8
++
++# CHECK-INST: wsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x13]
++wsr a8, 3
++
++# Instruction format RRR
++# CHECK-INST: xsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x61]
++xsr a8, sar
++
++# CHECK-INST: xsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x61]
++xsr.sar a8
++
++# CHECK-INST: xsr a8, sar
++# CHECK: encoding: [0x80,0x03,0x61]
++xsr a8, 3
+diff --git a/llvm/test/MC/Xtensa/Core/shift.s b/llvm/test/MC/Xtensa/Core/shift.s
+new file mode 100644
+index 000000000000..3f9c980ff555
+--- /dev/null
++++ b/llvm/test/MC/Xtensa/Core/shift.s
+@@ -0,0 +1,66 @@
++# RUN: llvm-mc %s -triple=xtensa -show-encoding \
++# RUN:     | FileCheck -check-prefixes=CHECK,CHECK-INST %s
++
++
++.align	4
++LBL0:
++
++# Instruction format RRR
++# CHECK-INST: extui a1, a2, 7, 8
++# CHECK: encoding: [0x20,0x17,0x74]
++extui a1, a2, 7, 8
++
++# Instruction format RRR
++# CHECK-INST: sll a10, a11
++# CHECK: encoding: [0x00,0xab,0xa1]
++sll a10, a11
++
++# Instruction format RRR
++# CHECK-INST: slli a5, a1, 15
++# CHECK: encoding: [0x10,0x51,0x11]
++slli a5, a1, 15
++
++# Instruction format RRR
++# CHECK-INST: sra a12, a3
++# CHECK: encoding: [0x30,0xc0,0xb1]
++sra a12, a3
++
++# Instruction format RRR
++# CHECK-INST: srai a8, a5, 0
++# CHECK: encoding: [0x50,0x80,0x21]
++srai a8, a5, 0
++
++# Instruction format RRR
++# CHECK-INST: src a3, a4, a5
++# CHECK: encoding: [0x50,0x34,0x81]
++src a3, a4, a5
++
++# Instruction format RRR
++# CHECK-INST: srl a6, a7
++# CHECK: encoding: [0x70,0x60,0x91]
++srl a6, a7
++
++# Instruction format RRR
++# CHECK-INST: srli a3, a4, 8
++# CHECK: encoding: [0x40,0x38,0x41]
++srli a3, a4, 8
++
++# Instruction format RRR
++# CHECK-INST: ssa8l a14
++# CHECK: encoding: [0x00,0x2e,0x40]
++ssa8l a14
++
++# Instruction format RRR
++# CHECK-INST: ssai 31
++# CHECK: encoding: [0x10,0x4f,0x40]
++ssai 31
++
++# Instruction format RRR
++# CHECK-INST: ssl a0
++# CHECK: encoding: [0x00,0x10,0x40]
++ssl a0
++
++# Instruction format RRR
++# CHECK-INST: ssr a2
++# CHECK: encoding: [0x00,0x02,0x40]
++ssr a2
+-- 
+2.34.1
+
